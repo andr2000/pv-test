@@ -1,6 +1,7 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 
 #include <asm/xen/hypervisor.h>
 
@@ -24,29 +25,102 @@
 
 int debug_level;
 
+struct xenaudio_info {
+	struct xenbus_device *xbdev;
+	char phys[32];
+};
+
+static int xenaudio_talk_to_back(struct xenbus_device *dev,
+				struct xenaudio_info *info);
+static void xenaudio_connect_backend(struct xenaudio_info *info);
+static void xenaudio_disconnect_backend(struct xenaudio_info *info);
+
+static int xenaudio_remove(struct xenbus_device *dev);
+
 static int xenaudio_probe(struct xenbus_device *dev,
-				  const struct xenbus_device_id *id)
+				const struct xenbus_device_id *id)
 {
-	LOG0(AUDIO_DEVICE_NAME);
+	struct xenaudio_info *info;
+	int ret;
+
+	LOG0();
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	if (!info)
+		goto error_nomem;
+	dev_set_drvdata(&dev->dev, info);
+	info->xbdev = dev;
+	snprintf(info->phys, sizeof(info->phys), "xenbus/%s", dev->nodename);
+	/* connect backend now, get audio device(s) topology, then
+	 *  initialize audio devices */
+	ret = xenaudio_talk_to_back(dev, info);
+	if (ret < 0)
+		goto error;
+
 	return 0;
+
+error_nomem:
+	ret = -ENOMEM;
+	xenbus_dev_fatal(dev, ret, "allocating device memory");
+error:
+	xenaudio_remove(dev);
+	return ret;
 }
 
 static int xenaudio_remove(struct xenbus_device *dev)
 {
-	LOG0(AUDIO_DEVICE_NAME);
+	LOG0();
 	return 0;
-}
-
-static void xenaudio_backend_changed(struct xenbus_device *dev,
-				   enum xenbus_state backend_state)
-{
-	LOG0(AUDIO_DEVICE_NAME);
 }
 
 static int xenaudio_resume(struct xenbus_device *dev)
 {
-	LOG0(AUDIO_DEVICE_NAME);
+	LOG0();
 	return 0;
+}
+
+static void xenaudio_backend_changed(struct xenbus_device *dev,
+				enum xenbus_state backend_state)
+{
+	struct xenaudio_info *info = dev_get_drvdata(&dev->dev);
+
+	LOG0("Backend state is %d", backend_state);
+	switch (backend_state) {
+	case XenbusStateReconfiguring:
+	case XenbusStateReconfigured:
+	case XenbusStateInitialising:
+	case XenbusStateInitialised:
+	case XenbusStateInitWait:
+		break;
+
+	case XenbusStateConnected:
+		xenaudio_connect_backend(info);
+		break;
+
+	case XenbusStateUnknown:
+	case XenbusStateClosed:
+		if (dev->state == XenbusStateClosed)
+			break;
+		/* Missed the backend's CLOSING state -- fallthrough */
+	case XenbusStateClosing:
+		xenaudio_disconnect_backend(info);
+		break;
+	}
+}
+
+static int xenaudio_talk_to_back(struct xenbus_device *dev,
+				struct xenaudio_info *info)
+{
+	LOG0("Allocating resources");
+	xenbus_switch_state(dev, XenbusStateConnected);
+	return 0;
+}
+
+static void xenaudio_connect_backend(struct xenaudio_info *info)
+{
+}
+
+static void xenaudio_disconnect_backend(struct xenaudio_info *info)
+{
 }
 
 static const struct xenbus_device_id xenaudio_ids[] = {
