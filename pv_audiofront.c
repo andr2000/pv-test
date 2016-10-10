@@ -30,7 +30,7 @@ struct xenaudio_info {
 	char phys[32];
 };
 
-static int xenaudio_talk_to_back(struct xenbus_device *dev,
+static int talk_to_audioback(struct xenbus_device *xbdev,
 				struct xenaudio_info *info);
 static void xenaudio_connect_backend(struct xenaudio_info *info);
 static void xenaudio_disconnect_backend(struct xenaudio_info *info);
@@ -52,7 +52,7 @@ static int xenaudio_probe(struct xenbus_device *dev,
 	snprintf(info->phys, sizeof(info->phys), "xenbus/%s", dev->nodename);
 	/* connect backend now, get audio device(s) topology, then
 	 *  initialize audio devices */
-	ret = xenaudio_talk_to_back(dev, info);
+	ret = talk_to_audioback(dev, info);
 	if (ret < 0)
 		goto error;
 
@@ -68,7 +68,10 @@ error:
 
 static int xenaudio_remove(struct xenbus_device *dev)
 {
+	struct xenaudio_info *info = dev_get_drvdata(&dev->dev);
+
 	LOG0();
+	kfree(info);
 	return 0;
 }
 
@@ -107,20 +110,40 @@ static void xenaudio_backend_changed(struct xenbus_device *dev,
 	}
 }
 
-static int xenaudio_talk_to_back(struct xenbus_device *dev,
+static void xenaudio_free(struct xenaudio_info *info)
+{
+	LOG0();
+}
+
+static int xenaudio_create(struct xenbus_device *xbdev, struct xenaudio_info *info)
+{
+	LOG0();
+	return 0;
+}
+
+/* Common code used when first setting up, and when resuming. */
+static int talk_to_audioback(struct xenbus_device *xbdev,
 				struct xenaudio_info *info)
 {
-	LOG0("Allocating resources");
-	xenbus_switch_state(dev, XenbusStateConnected);
-	return 0;
+	int ret;
+
+	LOG0();
+	ret = xenaudio_create(xbdev, info);
+	if (ret)
+		goto out;
+	xenbus_switch_state(xbdev, XenbusStateInitialised);
+out:
+	return ret;
 }
 
 static void xenaudio_connect_backend(struct xenaudio_info *info)
 {
+	LOG0();
 }
 
 static void xenaudio_disconnect_backend(struct xenaudio_info *info)
 {
+	LOG0();
 }
 
 static const struct xenbus_device_id xenaudio_ids[] = {
