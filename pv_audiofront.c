@@ -33,15 +33,14 @@
 #include <xen/platform_pci.h>
 #include <xen/xenbus.h>
 
-#define AUDIO_DEVICE_NAME	"vaudio"
-#define AUDIO_CARD_NAME_FMT	"vcard%d"
+#define VAUDIO_DRIVER_NAME	"vaudio"
 
 #ifdef SILENT
 #define LOG(log_level, fmt, ...)
 #else
 #define LOG(log_level, fmt, ...) \
 		do { \
-			printk(AUDIO_DEVICE_NAME #log_level " (%s:%d): " fmt "\n", \
+			printk(VAUDIO_DRIVER_NAME #log_level " (%s:%d): " fmt "\n", \
 					__FUNCTION__, __LINE__ , ## __VA_ARGS__); \
 		} while (0)
 #endif
@@ -50,35 +49,34 @@
 
 int debug_level;
 
-struct snd_dev_vaudio_info;
-
 struct xen_drv_vaudio_info {
 	struct xenbus_device *xen_bus_dev;
 	char phys[32];
 	/* number of virtual cards */
 	int num_cards;
 	/* array of virtual audio platform devices */
-	struct snd_dev_vaudio_info *snd_dev_info;
+	struct platform_device **snd_drv_dev;
 };
 
 struct snd_dev_vaudio_info {
-	char name[32];
 	struct xen_drv_vaudio_info *xen_drv_info;
-	struct platform_device *snd_dev;
+	int index;
 };
 
 /*
  * Audio driver start
  */
-static int snd_drv_vaudio_probe(struct platform_device *devptr)
+static int snd_drv_vaudio_probe(struct platform_device *pdev)
 {
-	LOG0();
+	struct snd_dev_vaudio_info *info = platform_get_drvdata(pdev);
+	LOG0("Probing Card %d", info->index);
 	return 0;
 }
 
-static int snd_drv_vaudio_remove(struct platform_device *devptr)
+static int snd_drv_vaudio_remove(struct platform_device *pdev)
 {
-	LOG0();
+	struct snd_dev_vaudio_info *info = platform_get_drvdata(pdev);
+	LOG0("Removing Card %d", info->index);
 	return 0;
 }
 
@@ -86,7 +84,7 @@ static struct platform_driver snd_drv_vaudio_info = {
 	.probe		= snd_drv_vaudio_probe,
 	.remove		= snd_drv_vaudio_remove,
 	.driver		= {
-		.name	= AUDIO_DEVICE_NAME,
+		.name	= VAUDIO_DRIVER_NAME,
 	},
 };
 
@@ -109,21 +107,25 @@ static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info)
 	num_cards = 2;
 	/* XXX: test code - stop */
 	info->num_cards = num_cards;
-	info->snd_dev_info = kzalloc(sizeof(info->snd_dev_info[0]) * num_cards,
+	info->snd_drv_dev = kzalloc(sizeof(info->snd_drv_dev[0]) * num_cards,
 			GFP_KERNEL);
-	if (!info->snd_dev_info)
+	if (!info->snd_drv_dev)
 		goto fail;
 	for (i = 0; i < num_cards; i++) {
 		struct platform_device *snd_drv_dev;
-		struct snd_dev_vaudio_info *snd_dev_info = &info->snd_dev_info[i];
+		struct snd_dev_vaudio_info *snd_dev_info;
+
 		LOG0("Adding card %d", i);
-		snprintf(snd_dev_info->name, sizeof(snd_dev_info->name),
-				AUDIO_CARD_NAME_FMT, i);
-		snd_drv_dev = platform_device_register_data(NULL,
-				snd_dev_info->name, i, &info, sizeof(info));
+		snd_dev_info = kzalloc(sizeof(*snd_dev_info), GFP_KERNEL);
+		if (!snd_dev_info)
+			goto fail;
+		snd_dev_info->xen_drv_info = info;
+		snd_dev_info->index = i;
+		snd_drv_dev = platform_device_register_data(NULL, VAUDIO_DRIVER_NAME,
+				i, snd_dev_info, sizeof(*snd_dev_info));
 		if (IS_ERR(snd_drv_dev))
 			goto fail;
-		snd_dev_info->snd_dev = snd_drv_dev;
+		info->snd_drv_dev[i] = snd_drv_dev;
 	}
 	LOG0("Added %d cards", num_cards);
 	return 0;
@@ -268,7 +270,7 @@ static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info)
  */
 
 static const struct xenbus_device_id xen_drv_vaudio_ids[] = {
-	{ AUDIO_DEVICE_NAME },
+	{ VAUDIO_DRIVER_NAME },
 	{ "" }
 };
 
@@ -285,18 +287,18 @@ static int __init xen_drv_vaudio_init(void)
 	if (!xen_domain())
 		return -ENODEV;
 	if (xen_initial_domain()) {
-		LOG0(AUDIO_DEVICE_NAME " cannot run in Dom0");
+		LOG0(VAUDIO_DRIVER_NAME " cannot run in Dom0");
 		return -ENODEV;
 	}
 	if (!xen_has_pv_devices())
 		return -ENODEV;
-	LOG0("Registering XEN PV " AUDIO_DEVICE_NAME);
+	LOG0("Registering XEN PV " VAUDIO_DRIVER_NAME);
 	return xenbus_register_frontend(&xen_vaudio_driver);
 }
 
 static void __exit xen_drv_vaudio_cleanup(void)
 {
-	LOG0("Unregistering XEN PV " AUDIO_DEVICE_NAME);
+	LOG0("Unregistering XEN PV " VAUDIO_DRIVER_NAME);
 	xenbus_unregister_driver(&xen_vaudio_driver);
 }
 
@@ -305,4 +307,4 @@ module_exit(xen_drv_vaudio_cleanup);
 
 MODULE_DESCRIPTION("Xen virtual audio device frontend");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("xen:"AUDIO_DEVICE_NAME);
+MODULE_ALIAS("xen:"VAUDIO_DRIVER_NAME);
