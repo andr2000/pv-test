@@ -2,8 +2,8 @@
  *  Xen para-virtual audio device
  *  Copyright (c) 2016, Oleksandr Andrushchenko
  *
- *  Based on sound/drivers/vaudio.c
- *  Based on drivers/input/misc/xen-kbdfront.c
+ *  Based on sound/drivers/dummy.c
+ *  Based on drivers/net/xen-netfront.c
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
