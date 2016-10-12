@@ -51,7 +51,7 @@ int debug_level;
 
 struct xen_drv_vaudio_info {
 	struct xenbus_device *xen_bus_dev;
-	char phys[32];
+	char *phys;
 	/* number of virtual cards */
 	int num_cards;
 	/* array of virtual audio platform devices */
@@ -75,15 +75,23 @@ struct snd_dev_card_info {
  */
 static int snd_drv_vaudio_probe(struct platform_device *pdev)
 {
-	struct snd_dev_card_platdata *info = dev_get_platdata(&pdev->dev);
-	LOG0("Probing Card %d", info->index);
-	/* alloc private card's data */
+	struct snd_dev_card_info *info;
+	struct snd_dev_card_platdata *platdata = dev_get_platdata(&pdev->dev);
+	LOG0("Probing Card %d", platdata->index);
+	info = devm_kzalloc(&pdev->dev,	sizeof(*info), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+	info->xen_drv_info = platdata->xen_drv_info;
+	info->index = platdata->index;
+	LOG0("Will configure %d playback and %d capture streams",
+			platdata->num_streams_playback, platdata->num_streams_capture);
+	dev_set_drvdata(&pdev->dev, info);
 	return 0;
 }
 
 static int snd_drv_vaudio_remove(struct platform_device *pdev)
 {
-	struct snd_dev_card_platdata *info = dev_get_platdata(&pdev->dev);
+	struct snd_dev_card_info *info = platform_get_drvdata(pdev);
 	LOG0("Removing Card %d", info->index);
 	return 0;
 }
@@ -98,27 +106,40 @@ static struct platform_driver snd_drv_vaudio_info = {
 
 static void snd_drv_vaudio_cleanup(struct xen_drv_vaudio_info *info)
 {
-	LOG0();
+	int i;
+
+	LOG0("Cleaning audio driver");
+	for (i = 0; i < info->num_cards; i++) {
+		struct platform_device *snd_drv_dev;
+
+		LOG0("Removing audio card %d", i);
+		snd_drv_dev = info->snd_drv_dev[i];
+		if (snd_drv_dev)
+			platform_device_unregister(snd_drv_dev);
+	}
+	LOG0("Removing audio driver");
+	platform_driver_unregister(&snd_drv_vaudio_info);
+	LOG0("Audio driver cleanup complete");
 }
 
 static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info)
 {
-	int i, num_cards, err;
+	int i, num_cards, ret;
 
 	LOG0();
-	err = platform_driver_register(&snd_drv_vaudio_info);
-	if (err < 0)
-		return err;
+	ret = platform_driver_register(&snd_drv_vaudio_info);
+	if (ret < 0)
+		return ret;
 
 	LOG0("platform_driver_register ok");
 	/* XXX: test code - start */
 	num_cards = 2;
 	/* XXX: test code - stop */
-	info->num_cards = num_cards;
-	info->snd_drv_dev = kzalloc(sizeof(info->snd_drv_dev[0]) * num_cards,
-			GFP_KERNEL);
+	info->snd_drv_dev = devm_kzalloc(&info->xen_bus_dev->dev,
+			sizeof(info->snd_drv_dev[0]) * num_cards, GFP_KERNEL);
 	if (!info->snd_drv_dev)
 		goto fail;
+	info->num_cards = num_cards;
 	for (i = 0; i < num_cards; i++) {
 		struct platform_device *snd_drv_dev;
 		struct snd_dev_card_platdata snd_dev_platdata;
@@ -141,7 +162,7 @@ static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info)
 	return 0;
 
 fail:
-	LOG0("fail");
+	LOG0("Failed to register audio driver");
 	snd_drv_vaudio_cleanup(info);
 	return -ENODEV;
 }
@@ -161,37 +182,40 @@ static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info);
 
 static int xen_drv_vaudio_remove(struct xenbus_device *dev);
 
-static int xen_drv_vaudio_probe(struct xenbus_device *dev,
+static int xen_drv_vaudio_probe(struct xenbus_device *xbdev,
 				const struct xenbus_device_id *id)
 {
 	struct xen_drv_vaudio_info *info;
 	int ret;
 
 	LOG0();
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
-		goto error_nomem;
-	dev_set_drvdata(&dev->dev, info);
-	info->xen_bus_dev = dev;
-	snprintf(info->phys, sizeof(info->phys), "xenbus/%s", dev->nodename);
+	info = devm_kzalloc(&xbdev->dev, sizeof(*info), GFP_KERNEL);
+	if (!info) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	dev_set_drvdata(&xbdev->dev, info);
+	info->xen_bus_dev = xbdev;
+	info->phys = devm_kasprintf(&xbdev->dev, GFP_KERNEL, "xenbus/%s", xbdev->nodename);
+	if (!info->phys) {
+		ret = -ENOMEM;
+		goto fail;
+	}
 	/* connect backend now, get audio device(s) topology, then
 	 *  initialize audio devices */
-	ret = xen_drv_talk_to_audioback(dev, info);
+	ret = xen_drv_talk_to_audioback(xbdev, info);
 	if (ret < 0)
-		goto error;
+		goto fail;
 
 	/* XXX: this is test code. must be removed - start */
 	LOG0("HACK! --------------------------------------------------");
-	snd_drv_vaudio_init(info);
+	ret = snd_drv_vaudio_init(info);
+	if (ret < 0)
+		goto fail;
 	/* XXX: this is test code. must be removed - stop */
-
 	return 0;
-
-error_nomem:
-	ret = -ENOMEM;
-	xenbus_dev_fatal(dev, ret, "allocating device memory");
-error:
-	xen_drv_vaudio_remove(dev);
+fail:
+	xenbus_dev_fatal(xbdev, ret, "allocating device memory");
 	return ret;
 }
 
@@ -199,8 +223,8 @@ static int xen_drv_vaudio_remove(struct xenbus_device *dev)
 {
 	struct xen_drv_vaudio_info *info = dev_get_drvdata(&dev->dev);
 
-	LOG0();
-	kfree(info);
+	LOG0("Removing audio driver");
+	snd_drv_vaudio_cleanup(info);
 	return 0;
 }
 
@@ -273,6 +297,7 @@ static void xen_drv_vaudio_connect_backend(struct xen_drv_vaudio_info *info)
 static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info)
 {
 	LOG0();
+	xen_drv_vaudio_free(info);
 }
 
 /*
