@@ -177,7 +177,7 @@ fail:
 
 static int xen_drv_talk_to_audioback(struct xenbus_device *xbdev,
 				struct xen_drv_vaudio_info *info);
-static void xen_drv_vaudio_connect_backend(struct xen_drv_vaudio_info *info);
+static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *info);
 static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info);
 
 static int xen_drv_vaudio_remove(struct xenbus_device *dev);
@@ -201,11 +201,6 @@ static int xen_drv_vaudio_probe(struct xenbus_device *xbdev,
 		ret = -ENOMEM;
 		goto fail;
 	}
-	/* connect backend now, get audio device(s) topology, then
-	 *  initialize audio devices */
-	ret = xen_drv_talk_to_audioback(xbdev, info);
-	if (ret < 0)
-		goto fail;
 
 	/* XXX: this is test code. must be removed - start */
 	LOG0("HACK! --------------------------------------------------");
@@ -239,17 +234,24 @@ static void xen_drv_vaudio_backend_changed(struct xenbus_device *dev,
 {
 	struct xen_drv_vaudio_info *info = dev_get_drvdata(&dev->dev);
 
-	LOG0("Backend state is %d", backend_state);
+	LOG0("Backend state is %s, front is %s", xenbus_strstate(backend_state),
+			xenbus_strstate(dev->state));
 	switch (backend_state) {
 	case XenbusStateReconfiguring:
 	case XenbusStateReconfigured:
 	case XenbusStateInitialising:
-	case XenbusStateInitialised:
 	case XenbusStateInitWait:
 		break;
 
+	case XenbusStateInitialised:
+		if (dev->state != XenbusStateInitialising)
+			break;
+		if (xen_drv_talk_to_audioback(dev, info) != 0)
+			break;
+		break;
+
 	case XenbusStateConnected:
-		xen_drv_vaudio_connect_backend(info);
+		xen_drv_vaudio_on_backend_connected(info);
 		break;
 
 	case XenbusStateUnknown:
@@ -289,9 +291,12 @@ out:
 	return ret;
 }
 
-static void xen_drv_vaudio_connect_backend(struct xen_drv_vaudio_info *info)
+static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *info)
 {
+	int ret;
 	LOG0();
+	ret = snd_drv_vaudio_init(info);
+	xenbus_switch_state(info->xen_bus_dev, XenbusStateConnected);
 }
 
 static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info)
