@@ -27,11 +27,15 @@
 #include <linux/slab.h>
 #include <linux/platform_device.h>
 
-#include <asm/xen/hypervisor.h>
+#include <sound/core.h>
+#include <sound/pcm.h>
 
+#include <asm/xen/hypervisor.h>
 #include <xen/xen.h>
 #include <xen/platform_pci.h>
 #include <xen/xenbus.h>
+
+#include "vaudioif.h"
 
 #define VAUDIO_DRIVER_NAME	"vaudio"
 
@@ -51,48 +55,282 @@ int debug_level;
 
 struct xen_drv_vaudio_info {
 	struct xenbus_device *xen_bus_dev;
-	char *phys;
-	/* number of virtual cards */
-	int num_cards;
 	/* array of virtual audio platform devices */
 	struct platform_device **snd_drv_dev;
+
+	/* XXX: this comes from back to end configuration negotiation */
+	/* number of virtual cards */
+	int cfg_num_cards;
+	/* card configuration */
+	struct vaudioif_card_config *cfg_cards;
 };
 
 struct snd_dev_card_platdata {
 	struct xen_drv_vaudio_info *xen_drv_info;
 	int index;
-	int num_streams_playback;
-	int num_streams_capture;
+	struct vaudioif_card_config *card_config;
 };
 
 struct snd_dev_card_info {
 	struct xen_drv_vaudio_info *xen_drv_info;
+	struct snd_card *card;
+	struct snd_pcm *pcm;
+	struct snd_pcm_hardware pcm_hw;
 	int index;
 };
+
+/* XXX: remove me */
+#include "dbg_pv_audiofront.c"
+/* XXX: remove me */
+
 
 /*
  * Audio driver start
  */
+int snd_drv_pcm_open(struct snd_pcm_substream *substream)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+int snd_drv_pcm_close(struct snd_pcm_substream *substream)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+int snd_drv_pcm_hw_params(struct snd_pcm_substream *substream,
+		 struct snd_pcm_hw_params *params)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+int snd_drv_pcm_hw_free(struct snd_pcm_substream *substream)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+int snd_drv_pcm_prepare(struct snd_pcm_substream *substream)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+snd_pcm_uframes_t snd_drv_pcm_playback_pointer(struct snd_pcm_substream *substream)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+snd_pcm_uframes_t snd_drv_pcm_capture_pointer(struct snd_pcm_substream *substream)
+{
+	LOG0("Substream is %s", substream->name);
+	return 0;
+}
+
+int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
+		snd_pcm_uframes_t pos,
+		void __user *buf, snd_pcm_uframes_t count)
+{
+	LOG0("Substream is %s channel %d pos %lu count %lu", substream->name, channel, pos, count);
+	return 0;
+}
+
+int snd_drv_pcm_capture_copy(struct snd_pcm_substream *substream, int channel,
+		snd_pcm_uframes_t pos,
+		void __user *buf, snd_pcm_uframes_t count)
+{
+	LOG0("Substream is %s channel %d pos %lu count %lu", substream->name, channel, pos, count);
+	return 0;
+}
+
+int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channel,
+		snd_pcm_uframes_t pos, snd_pcm_uframes_t count)
+{
+	LOG0("Substream is %s channel %d pos %lu count %lu", substream->name, channel, pos, count);
+	return 0;
+}
+
+/* defaults */
+#define MAX_BUFFER_SIZE		(4*1024)
+#define MIN_PERIOD_SIZE		64
+#define MAX_PERIOD_SIZE		MAX_BUFFER_SIZE
+#define USE_FORMATS 		(SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S16_LE)
+#define USE_RATE		SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_48000
+#define USE_RATE_MIN		5500
+#define USE_RATE_MAX		48000
+#define USE_CHANNELS_MIN 	1
+#define USE_CHANNELS_MAX 	2
+#define USE_PERIODS_MIN 	1
+#define USE_PERIODS_MAX 	1024
+
+static struct snd_pcm_hardware snd_drv_pcm_hardware = {
+		.info =			(SNDRV_PCM_INFO_MMAP |
+					 SNDRV_PCM_INFO_INTERLEAVED |
+					 SNDRV_PCM_INFO_RESUME |
+					 SNDRV_PCM_INFO_MMAP_VALID),
+		.formats =		USE_FORMATS,
+		.rates =		USE_RATE,
+		.rate_min =		USE_RATE_MIN,
+		.rate_max =		USE_RATE_MAX,
+		.channels_min =		USE_CHANNELS_MIN,
+		.channels_max =		USE_CHANNELS_MAX,
+		.buffer_bytes_max =	MAX_BUFFER_SIZE,
+		.period_bytes_min =	MIN_PERIOD_SIZE,
+		.period_bytes_max =	MAX_PERIOD_SIZE,
+		.periods_min =		USE_PERIODS_MIN,
+		.periods_max =		USE_PERIODS_MAX,
+		.fifo_size =		0,
+};
+
+static struct snd_pcm_ops snd_drv_pcm_playback_ops = {
+		.open =		snd_drv_pcm_open,
+		.close =	snd_drv_pcm_close,
+		.ioctl =	snd_pcm_lib_ioctl,
+		.hw_params =	snd_drv_pcm_hw_params,
+		.hw_free =	snd_drv_pcm_hw_free,
+		.prepare =	snd_drv_pcm_prepare,
+		.trigger =	snd_drv_pcm_trigger,
+		.pointer =	snd_drv_pcm_playback_pointer,
+		.copy =		snd_drv_pcm_playback_copy,
+		.silence =	snd_drv_pcm_playback_silence,
+};
+
+static struct snd_pcm_ops snd_drv_pcm_capture_ops = {
+		.open =		snd_drv_pcm_open,
+		.close =	snd_drv_pcm_close,
+		.ioctl =	snd_pcm_lib_ioctl,
+		.hw_params =	snd_drv_pcm_hw_params,
+		.hw_free =	snd_drv_pcm_hw_free,
+		.prepare =	snd_drv_pcm_prepare,
+		.trigger =	snd_drv_pcm_trigger,
+		.pointer =	snd_drv_pcm_capture_pointer,
+		.copy =		snd_drv_pcm_capture_copy,
+};
+
+static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
+		struct vaudioif_stream_config *stream_config, int device)
+{
+	struct snd_pcm *pcm;
+	bool is_pb;
+	int ret;
+
+	is_pb = stream_config->type == VAUDIOIF_PROTO_STREAM_TYPE_PLAYBACK;
+	LOG0("stream_config->type %d", stream_config->type);
+	ret = snd_pcm_new(card_info->card, "Virtual card PCM", device,
+			is_pb ? 1 : 0, is_pb ? 0 : 1, &pcm);
+	if (ret < 0)
+		return ret;
+	card_info->pcm = pcm;
+	if (is_pb)
+		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &snd_drv_pcm_playback_ops);
+	if (!is_pb)
+		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_drv_pcm_capture_ops);
+	pcm->private_data = card_info;
+	pcm->info_flags = 0;
+	strcpy(pcm->name, "Virtual card PCM");
+	return 0;
+}
+
 static int snd_drv_vaudio_probe(struct platform_device *pdev)
 {
-	struct snd_dev_card_info *info;
-	struct snd_dev_card_platdata *platdata = dev_get_platdata(&pdev->dev);
-	LOG0("Probing Card %d", platdata->index);
-	info = devm_kzalloc(&pdev->dev,	sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return -ENOMEM;
-	info->xen_drv_info = platdata->xen_drv_info;
-	info->index = platdata->index;
-	LOG0("Will configure %d playback and %d capture streams",
-			platdata->num_streams_playback, platdata->num_streams_capture);
-	dev_set_drvdata(&pdev->dev, info);
-	return 0;
+	struct snd_dev_card_info *card_info;
+	struct snd_dev_card_platdata *platdata;
+	struct snd_card *card;
+	char card_id[sizeof(card->id)];
+	int ret, i;
+
+	platdata = dev_get_platdata(&pdev->dev);
+	LOG0("Creating virtual sound card %d", platdata->index);
+	LOG0("Will configure %d playback/capture streams",
+			platdata->card_config->num_streams);
+
+	snprintf(card_id, sizeof(card->id), VAUDIO_DRIVER_NAME "%d", platdata->index);
+	ret = snd_card_new(&pdev->dev, platdata->index, card_id, THIS_MODULE,
+			sizeof(struct snd_dev_card_info), &card);
+	if (ret < 0)
+		return ret;
+	card_info = card->private_data;
+	card_info->xen_drv_info = platdata->xen_drv_info;
+	card_info->index = platdata->index;
+	card_info->card = card;
+
+	/* FIXME: we create separate streams for each playback and
+	 * capture. It is also possible to combine some of them into
+	 * composite PCM instances to contain both playback and
+	 * capture stream at the same time, e.g. "Analog" device with
+	 * one playback and one capture streams.
+	 */
+	for (i = 0; i < platdata->card_config->num_streams; i++) {
+		ret = snd_drv_vaudio_new_pcm(card_info,
+				&platdata->card_config->stream[i], i);
+		if (ret < 0)
+			goto fail;
+	}
+#if 0
+	card_info->pcm_hw = snd_drv_pcm_hardware;
+		if (m) {
+			if (m->formats)
+				dummy->pcm_hw.formats = m->formats;
+			if (m->buffer_bytes_max)
+				dummy->pcm_hw.buffer_bytes_max = m->buffer_bytes_max;
+			if (m->period_bytes_min)
+				dummy->pcm_hw.period_bytes_min = m->period_bytes_min;
+			if (m->period_bytes_max)
+				dummy->pcm_hw.period_bytes_max = m->period_bytes_max;
+			if (m->periods_min)
+				dummy->pcm_hw.periods_min = m->periods_min;
+			if (m->periods_max)
+				dummy->pcm_hw.periods_max = m->periods_max;
+			if (m->rates)
+				dummy->pcm_hw.rates = m->rates;
+			if (m->rate_min)
+				dummy->pcm_hw.rate_min = m->rate_min;
+			if (m->rate_max)
+				dummy->pcm_hw.rate_max = m->rate_max;
+			if (m->channels_min)
+				dummy->pcm_hw.channels_min = m->channels_min;
+			if (m->channels_max)
+				dummy->pcm_hw.channels_max = m->channels_max;
+		}
+#endif
+#if 0
+		err = snd_card_dummy_new_mixer(dummy);
+		if (err < 0)
+			goto __nodev;
+
+		dummy_proc_init(dummy);
+
+#endif
+	strncpy(card->driver, VAUDIO_DRIVER_NAME, sizeof(card->driver));
+	strncpy(card->shortname, platdata->card_config->shortname,
+			sizeof(card->shortname));
+	strncpy(card->longname, platdata->card_config->longname, sizeof(card->longname));
+	ret = snd_card_register(card);
+	if (ret == 0) {
+		platform_set_drvdata(pdev, card);
+		return 0;
+	}
+fail:
+	snd_card_free(card);
+	return ret;
 }
 
 static int snd_drv_vaudio_remove(struct platform_device *pdev)
 {
-	struct snd_dev_card_info *info = platform_get_drvdata(pdev);
+	struct snd_dev_card_info *info;
+	struct snd_card *card = platform_get_drvdata(pdev);
+	info = card->private_data;
 	LOG0("Removing Card %d", info->index);
+	snd_card_free(card);
 	return 0;
 }
 
@@ -104,16 +342,16 @@ static struct platform_driver snd_drv_vaudio_info = {
 	},
 };
 
-static void snd_drv_vaudio_cleanup(struct xen_drv_vaudio_info *info)
+static void snd_drv_vaudio_cleanup(struct xen_drv_vaudio_info *drv_info)
 {
 	int i;
 
 	LOG0("Cleaning audio driver");
-	for (i = 0; i < info->num_cards; i++) {
+	for (i = 0; i < drv_info->cfg_num_cards; i++) {
 		struct platform_device *snd_drv_dev;
 
 		LOG0("Removing audio card %d", i);
-		snd_drv_dev = info->snd_drv_dev[i];
+		snd_drv_dev = drv_info->snd_drv_dev[i];
 		if (snd_drv_dev)
 			platform_device_unregister(snd_drv_dev);
 	}
@@ -122,8 +360,9 @@ static void snd_drv_vaudio_cleanup(struct xen_drv_vaudio_info *info)
 	LOG0("Audio driver cleanup complete");
 }
 
-static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info)
+static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *drv_info)
 {
+	char *cur_card_config;
 	int i, num_cards, ret;
 
 	LOG0();
@@ -135,11 +374,12 @@ static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info)
 	/* XXX: test code - start */
 	num_cards = 2;
 	/* XXX: test code - stop */
-	info->snd_drv_dev = devm_kzalloc(&info->xen_bus_dev->dev,
-			sizeof(info->snd_drv_dev[0]) * num_cards, GFP_KERNEL);
-	if (!info->snd_drv_dev)
+	drv_info->snd_drv_dev = devm_kzalloc(&drv_info->xen_bus_dev->dev,
+			sizeof(drv_info->snd_drv_dev[0]) * num_cards, GFP_KERNEL);
+	if (!drv_info->snd_drv_dev)
 		goto fail;
-	info->num_cards = num_cards;
+	drv_info->cfg_num_cards = num_cards;
+	cur_card_config = (char *)drv_info->cfg_cards;
 	for (i = 0; i < num_cards; i++) {
 		struct platform_device *snd_drv_dev;
 		struct snd_dev_card_platdata snd_dev_platdata;
@@ -147,23 +387,26 @@ static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info)
 		LOG0("Adding card %d", i);
 		/* pass card configuration via platform data */
 		memset(&snd_dev_platdata, 0, sizeof(snd_dev_platdata));
-		snd_dev_platdata.xen_drv_info = info;
-		/* XXX: the config below must be acquired from the backend */
+		snd_dev_platdata.xen_drv_info = drv_info;
 		snd_dev_platdata.index = i;
-		snd_dev_platdata.num_streams_capture = i + 1;
-		snd_dev_platdata.num_streams_playback = i * 2 + 1;
+		snd_dev_platdata.card_config =
+				(struct vaudioif_card_config *)cur_card_config;
 		snd_drv_dev = platform_device_register_data(NULL, VAUDIO_DRIVER_NAME,
 				i, &snd_dev_platdata, sizeof(snd_dev_platdata));
 		if (IS_ERR(snd_drv_dev))
 			goto fail;
-		info->snd_drv_dev[i] = snd_drv_dev;
+		drv_info->snd_drv_dev[i] = snd_drv_dev;
+		/* advance pointer to the next card configuration */
+		cur_card_config += sizeof(struct vaudioif_card_config) +
+				snd_dev_platdata.card_config->num_streams *
+				sizeof(struct vaudioif_stream_config);
 	}
 	LOG0("Added %d cards", num_cards);
 	return 0;
 
 fail:
 	LOG0("Failed to register audio driver");
-	snd_drv_vaudio_cleanup(info);
+	snd_drv_vaudio_cleanup(drv_info);
 	return -ENODEV;
 }
 
@@ -182,35 +425,29 @@ static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info);
 
 static int xen_drv_vaudio_remove(struct xenbus_device *dev);
 
-static int xen_drv_vaudio_probe(struct xenbus_device *xbdev,
+static int xen_drv_vaudio_probe(struct xenbus_device *xen_bus_dev,
 				const struct xenbus_device_id *id)
 {
-	struct xen_drv_vaudio_info *info;
+	struct xen_drv_vaudio_info *drv_info;
 	int ret;
 
 	LOG0();
-	info = devm_kzalloc(&xbdev->dev, sizeof(*info), GFP_KERNEL);
-	if (!info) {
+	drv_info = devm_kzalloc(&xen_bus_dev->dev, sizeof(*drv_info), GFP_KERNEL);
+	if (!drv_info) {
 		ret = -ENOMEM;
 		goto fail;
 	}
-	dev_set_drvdata(&xbdev->dev, info);
-	info->xen_bus_dev = xbdev;
-	info->phys = devm_kasprintf(&xbdev->dev, GFP_KERNEL, "xenbus/%s", xbdev->nodename);
-	if (!info->phys) {
-		ret = -ENOMEM;
-		goto fail;
-	}
+	dev_set_drvdata(&xen_bus_dev->dev, drv_info);
+	drv_info->xen_bus_dev = xen_bus_dev;
 
-	/* XXX: this is test code. must be removed - start */
-	LOG0("HACK! --------------------------------------------------");
-	ret = snd_drv_vaudio_init(info);
+	/* FIXME: remove me */
+	ret = DBG_vaudio_run(xen_bus_dev, drv_info);
 	if (ret < 0)
 		goto fail;
-	/* XXX: this is test code. must be removed - stop */
+	/* FIXME: remove me */
 	return 0;
 fail:
-	xenbus_dev_fatal(xbdev, ret, "allocating device memory");
+	xenbus_dev_fatal(xen_bus_dev, ret, "allocating device memory");
 	return ret;
 }
 
@@ -348,3 +585,5 @@ module_exit(xen_drv_vaudio_cleanup);
 MODULE_DESCRIPTION("Xen virtual audio device frontend");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("xen:"VAUDIO_DRIVER_NAME);
+MODULE_SUPPORTED_DEVICE("{{ALSA,Virtual soundcard}}");
+
