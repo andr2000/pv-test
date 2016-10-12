@@ -58,7 +58,14 @@ struct xen_drv_vaudio_info {
 	struct platform_device **snd_drv_dev;
 };
 
-struct snd_dev_vaudio_info {
+struct snd_dev_card_platdata {
+	struct xen_drv_vaudio_info *xen_drv_info;
+	int index;
+	int num_streams_playback;
+	int num_streams_capture;
+};
+
+struct snd_dev_card_info {
 	struct xen_drv_vaudio_info *xen_drv_info;
 	int index;
 };
@@ -68,14 +75,15 @@ struct snd_dev_vaudio_info {
  */
 static int snd_drv_vaudio_probe(struct platform_device *pdev)
 {
-	struct snd_dev_vaudio_info *info = platform_get_drvdata(pdev);
+	struct snd_dev_card_platdata *info = dev_get_platdata(&pdev->dev);
 	LOG0("Probing Card %d", info->index);
+	/* alloc private card's data */
 	return 0;
 }
 
 static int snd_drv_vaudio_remove(struct platform_device *pdev)
 {
-	struct snd_dev_vaudio_info *info = platform_get_drvdata(pdev);
+	struct snd_dev_card_platdata *info = dev_get_platdata(&pdev->dev);
 	LOG0("Removing Card %d", info->index);
 	return 0;
 }
@@ -113,16 +121,18 @@ static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info)
 		goto fail;
 	for (i = 0; i < num_cards; i++) {
 		struct platform_device *snd_drv_dev;
-		struct snd_dev_vaudio_info *snd_dev_info;
+		struct snd_dev_card_platdata snd_dev_platdata;
 
 		LOG0("Adding card %d", i);
-		snd_dev_info = kzalloc(sizeof(*snd_dev_info), GFP_KERNEL);
-		if (!snd_dev_info)
-			goto fail;
-		snd_dev_info->xen_drv_info = info;
-		snd_dev_info->index = i;
+		/* pass card configuration via platform data */
+		memset(&snd_dev_platdata, 0, sizeof(snd_dev_platdata));
+		snd_dev_platdata.xen_drv_info = info;
+		/* XXX: the config below must be acquired from the backend */
+		snd_dev_platdata.index = i;
+		snd_dev_platdata.num_streams_capture = i + 1;
+		snd_dev_platdata.num_streams_playback = i * 2 + 1;
 		snd_drv_dev = platform_device_register_data(NULL, VAUDIO_DRIVER_NAME,
-				i, snd_dev_info, sizeof(*snd_dev_info));
+				i, &snd_dev_platdata, sizeof(snd_dev_platdata));
 		if (IS_ERR(snd_drv_dev))
 			goto fail;
 		info->snd_drv_dev[i] = snd_drv_dev;
