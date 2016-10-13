@@ -74,6 +74,7 @@ struct snd_dev_card_platdata {
 struct snd_dev_card_info {
 	struct xen_drv_vaudio_info *xen_drv_info;
 	struct snd_card *card;
+	/* array of PCM instances of this card */
 	struct snd_pcm *pcm;
 	struct snd_pcm_hardware pcm_hw;
 	int index;
@@ -217,9 +218,9 @@ static struct snd_pcm_ops snd_drv_pcm_capture_ops = {
 };
 
 static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
-		struct vaudioif_pcm_instance_config *instance_config)
+		struct vaudioif_pcm_instance_config *instance_config,
+		struct snd_pcm *pcm)
 {
-	struct snd_pcm *pcm;
 	bool is_pb;
 	int ret;
 
@@ -235,7 +236,6 @@ static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 			&pcm);
 	if (ret < 0)
 		return ret;
-	card_info->pcm = pcm;
 	if (is_pb)
 		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK,
 				&snd_drv_pcm_playback_ops);
@@ -262,6 +262,15 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	LOG0("Will configure %d playback/capture streams",
 			platdata->card_config->num_pcm_instances);
 
+	card_info = devm_kzalloc(&pdev->dev,
+			sizeof(struct snd_dev_card_info), GFP_KERNEL);
+	if (!card_info)
+		return -ENOMEM;
+	card_info->pcm = devm_kzalloc(&pdev->dev,
+			platdata->card_config->num_pcm_instances *
+			sizeof(struct snd_pcm), GFP_KERNEL);
+	if (!card_info->pcm)
+		return -ENOMEM;
 	snprintf(card_id, sizeof(card->id), VAUDIO_DRIVER_NAME "%d",
 			platdata->index);
 	ret = snd_card_new(&pdev->dev, platdata->index, card_id, THIS_MODULE,
@@ -275,7 +284,8 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 
 	for (i = 0; i < platdata->card_config->num_pcm_instances; i++) {
 		ret = snd_drv_vaudio_new_pcm(card_info,
-				&platdata->card_config->pcm_instance[i]);
+				&platdata->card_config->pcm_instance[i],
+				&card_info->pcm[i]);
 		if (ret < 0)
 			goto fail;
 	}
