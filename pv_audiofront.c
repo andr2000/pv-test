@@ -263,25 +263,22 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	LOG0("Will configure %d playback/capture streams",
 			platdata->card_config->num_pcm_instances);
 
-	card_info = devm_kzalloc(&pdev->dev,
-			sizeof(struct snd_dev_card_info), GFP_KERNEL);
-	if (!card_info)
-		return -ENOMEM;
-	card_info->pcm = devm_kzalloc(&pdev->dev,
-			platdata->card_config->num_pcm_instances *
-			sizeof(struct snd_pcm), GFP_KERNEL);
-	if (!card_info->pcm)
-		return -ENOMEM;
 	snprintf(card_id, sizeof(card->id), VAUDIO_DRIVER_NAME "%d",
 			platdata->index);
 	ret = snd_card_new(&pdev->dev, platdata->index, card_id, THIS_MODULE,
 			sizeof(struct snd_dev_card_info), &card);
 	if (ret < 0)
 		return ret;
+	/* card_info is allocated and maintained by snd_card_new */
 	card_info = card->private_data;
 	card_info->xen_drv_info = platdata->xen_drv_info;
 	card_info->index = platdata->index;
 	card_info->card = card;
+	card_info->pcm = devm_kzalloc(&pdev->dev,
+			platdata->card_config->num_pcm_instances *
+			sizeof(struct snd_pcm), GFP_KERNEL);
+	if (!card_info->pcm)
+		goto fail;
 	card_info->num_pcm_instances = platdata->card_config->num_pcm_instances;
 
 	for (i = 0; i < platdata->card_config->num_pcm_instances; i++) {
