@@ -76,7 +76,7 @@ struct snd_dev_card_info {
 	struct snd_card *card;
 	/* array of PCM instances of this card */
 	int num_pcm_instances;
-	struct snd_pcm *pcm;
+	struct snd_pcm **pcm;
 	struct snd_pcm_hardware pcm_hw;
 	int index;
 };
@@ -220,8 +220,9 @@ static struct snd_pcm_ops snd_drv_pcm_capture_ops = {
 
 static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 		struct vaudioif_pcm_instance_config *instance_config,
-		struct snd_pcm *pcm)
+		struct snd_pcm **new_pcm)
 {
+	struct snd_pcm *pcm;
 	int ret;
 
 	LOG0("Device \"%s\" with id %d playback %d capture %d",
@@ -245,6 +246,7 @@ static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 	pcm->private_data = card_info;
 	pcm->info_flags = 0;
 	strcpy(pcm->name, "Virtual card PCM");
+	*new_pcm = pcm;
 	return 0;
 }
 
@@ -275,7 +277,7 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	card_info->card = card;
 	card_info->pcm = devm_kzalloc(&pdev->dev,
 			platdata->card_config->num_pcm_instances *
-			sizeof(struct snd_pcm), GFP_KERNEL);
+			sizeof(struct snd_pcm *), GFP_KERNEL);
 	if (!card_info->pcm)
 		goto fail;
 	card_info->num_pcm_instances = platdata->card_config->num_pcm_instances;
