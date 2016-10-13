@@ -75,6 +75,7 @@ struct snd_dev_card_info {
 	struct xen_drv_vaudio_info *xen_drv_info;
 	struct snd_card *card;
 	/* array of PCM instances of this card */
+	int num_pcm_instances;
 	struct snd_pcm *pcm;
 	struct snd_pcm_hardware pcm_hw;
 	int index;
@@ -281,6 +282,7 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	card_info->xen_drv_info = platdata->xen_drv_info;
 	card_info->index = platdata->index;
 	card_info->card = card;
+	card_info->num_pcm_instances = platdata->card_config->num_pcm_instances;
 
 	for (i = 0; i < platdata->card_config->num_pcm_instances; i++) {
 		ret = snd_drv_vaudio_new_pcm(card_info,
