@@ -222,7 +222,6 @@ static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 		struct vaudioif_pcm_instance_config *instance_config,
 		struct snd_pcm *pcm)
 {
-	bool is_pb;
 	int ret;
 
 	LOG0("Device \"%s\" with id %d playback %d capture %d",
@@ -237,10 +236,10 @@ static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 			&pcm);
 	if (ret < 0)
 		return ret;
-	if (is_pb)
+	if (instance_config->num_streams_pb)
 		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK,
 				&snd_drv_pcm_playback_ops);
-	if (!is_pb)
+	if (instance_config->num_streams_cap)
 		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE,
 				&snd_drv_pcm_capture_ops);
 	pcm->private_data = card_info;
