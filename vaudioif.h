@@ -24,11 +24,12 @@
 
 #define VAUDIOIF_PROTO_VERSION 0x0001
 
-#define VAUDIOIF_PROTO_STREAM_TYPE_PLAYBACK	(1)
-#define VAUDIOIF_PROTO_STREAM_TYPE_CAPTURE	(2)
-
-struct vaudioif_stream_config {
-	uint8_t  type;
+struct vaudioif_pcm_instance_config {
+	char name[80];
+	/* device number */
+	uint8_t device;
+	uint8_t  num_streams_pb;
+	uint8_t  num_streams_cap;
 } __attribute__((packed));
 
 struct vaudioif_card_pcm_hw_config {
@@ -53,14 +54,14 @@ struct vaudioif_card_config {
 	/* card configuration */
 	char shortname[32];
 	char longname[80];
-	/* number of streams in this configuration */
-	uint8_t num_streams;
+	/* number of PCM instances in this configuration */
+	uint8_t num_pcm_instances;
 	/* PCM hardware descriptor */
 	struct vaudioif_card_pcm_hw_config card_pcm_hw;
 
-	/* streams configurations - must be the last field in the structure
-	 * configuration data will be appended here: stream[num_streams] */
-	struct vaudioif_stream_config stream[0];
+	/* pcm instance configurations - must be the last field in the structure
+	 * configuration data will be appended here: pcm_instance[num_streams] */
+	struct vaudioif_pcm_instance_config pcm_instance[0];
 } __attribute__((packed));
 
 /* get the size of the card configuration structure */

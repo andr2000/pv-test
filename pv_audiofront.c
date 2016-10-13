@@ -217,23 +217,31 @@ static struct snd_pcm_ops snd_drv_pcm_capture_ops = {
 };
 
 static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
-		struct vaudioif_stream_config *stream_config, int device)
+		struct vaudioif_pcm_instance_config *instance_config)
 {
 	struct snd_pcm *pcm;
 	bool is_pb;
 	int ret;
 
-	is_pb = stream_config->type == VAUDIOIF_PROTO_STREAM_TYPE_PLAYBACK;
-	LOG0("stream_config->type %d", stream_config->type);
-	ret = snd_pcm_new(card_info->card, "Virtual card PCM", device,
-			is_pb ? 1 : 0, is_pb ? 0 : 1, &pcm);
+	LOG0("Device \"%s\" with id %d playback %d capture %d",
+			instance_config->name,
+			instance_config->device,
+			instance_config->num_streams_pb,
+			instance_config->num_streams_cap);
+	ret = snd_pcm_new(card_info->card, instance_config->name,
+			instance_config->device,
+			instance_config->num_streams_pb,
+			instance_config->num_streams_cap,
+			&pcm);
 	if (ret < 0)
 		return ret;
 	card_info->pcm = pcm;
 	if (is_pb)
-		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &snd_drv_pcm_playback_ops);
+		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK,
+				&snd_drv_pcm_playback_ops);
 	if (!is_pb)
-		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_drv_pcm_capture_ops);
+		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE,
+				&snd_drv_pcm_capture_ops);
 	pcm->private_data = card_info;
 	pcm->info_flags = 0;
 	strcpy(pcm->name, "Virtual card PCM");
@@ -245,15 +253,17 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	struct snd_dev_card_info *card_info;
 	struct snd_dev_card_platdata *platdata;
 	struct snd_card *card;
+	struct vaudioif_card_pcm_hw_config *card_pcm_hw;
 	char card_id[sizeof(card->id)];
 	int ret, i;
 
 	platdata = dev_get_platdata(&pdev->dev);
 	LOG0("Creating virtual sound card %d", platdata->index);
 	LOG0("Will configure %d playback/capture streams",
-			platdata->card_config->num_streams);
+			platdata->card_config->num_pcm_instances);
 
-	snprintf(card_id, sizeof(card->id), VAUDIO_DRIVER_NAME "%d", platdata->index);
+	snprintf(card_id, sizeof(card->id), VAUDIO_DRIVER_NAME "%d",
+			platdata->index);
 	ret = snd_card_new(&pdev->dev, platdata->index, card_id, THIS_MODULE,
 			sizeof(struct snd_dev_card_info), &card);
 	if (ret < 0)
@@ -263,45 +273,39 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	card_info->index = platdata->index;
 	card_info->card = card;
 
-	/* FIXME: we create separate streams for each playback and
-	 * capture. It is also possible to combine some of them into
-	 * composite PCM instances to contain both playback and
-	 * capture stream at the same time, e.g. "Analog" device with
-	 * one playback and one capture streams.
-	 */
-	for (i = 0; i < platdata->card_config->num_streams; i++) {
+	for (i = 0; i < platdata->card_config->num_pcm_instances; i++) {
 		ret = snd_drv_vaudio_new_pcm(card_info,
-				&platdata->card_config->stream[i], i);
+				&platdata->card_config->pcm_instance[i]);
 		if (ret < 0)
 			goto fail;
 	}
-#if 0
 	card_info->pcm_hw = snd_drv_pcm_hardware;
-		if (m) {
-			if (m->formats)
-				dummy->pcm_hw.formats = m->formats;
-			if (m->buffer_bytes_max)
-				dummy->pcm_hw.buffer_bytes_max = m->buffer_bytes_max;
-			if (m->period_bytes_min)
-				dummy->pcm_hw.period_bytes_min = m->period_bytes_min;
-			if (m->period_bytes_max)
-				dummy->pcm_hw.period_bytes_max = m->period_bytes_max;
-			if (m->periods_min)
-				dummy->pcm_hw.periods_min = m->periods_min;
-			if (m->periods_max)
-				dummy->pcm_hw.periods_max = m->periods_max;
-			if (m->rates)
-				dummy->pcm_hw.rates = m->rates;
-			if (m->rate_min)
-				dummy->pcm_hw.rate_min = m->rate_min;
-			if (m->rate_max)
-				dummy->pcm_hw.rate_max = m->rate_max;
-			if (m->channels_min)
-				dummy->pcm_hw.channels_min = m->channels_min;
-			if (m->channels_max)
-				dummy->pcm_hw.channels_max = m->channels_max;
-		}
-#endif
+	card_pcm_hw = &platdata->card_config->card_pcm_hw;
+	if (card_pcm_hw->formats)
+		card_info->pcm_hw.formats = card_pcm_hw->formats;
+	if (card_pcm_hw->buffer_bytes_max)
+		card_info->pcm_hw.buffer_bytes_max =
+				card_pcm_hw->buffer_bytes_max;
+	if (card_pcm_hw->period_bytes_min)
+		card_info->pcm_hw.period_bytes_min =
+				card_pcm_hw->period_bytes_min;
+	if (card_pcm_hw->period_bytes_max)
+		card_info->pcm_hw.period_bytes_max =
+				card_pcm_hw->period_bytes_max;
+	if (card_pcm_hw->periods_min)
+		card_info->pcm_hw.periods_min = card_pcm_hw->periods_min;
+	if (card_pcm_hw->periods_max)
+		card_info->pcm_hw.periods_max = card_pcm_hw->periods_max;
+	if (card_pcm_hw->rates)
+		card_info->pcm_hw.rates = card_pcm_hw->rates;
+	if (card_pcm_hw->rate_min)
+		card_info->pcm_hw.rate_min = card_pcm_hw->rate_min;
+	if (card_pcm_hw->rate_max)
+		card_info->pcm_hw.rate_max = card_pcm_hw->rate_max;
+	if (card_pcm_hw->channels_min)
+		card_info->pcm_hw.channels_min = card_pcm_hw->channels_min;
+	if (card_pcm_hw->channels_max)
+		card_info->pcm_hw.channels_max = card_pcm_hw->channels_max;
 #if 0
 		err = snd_card_dummy_new_mixer(dummy);
 		if (err < 0)
@@ -313,7 +317,8 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	strncpy(card->driver, VAUDIO_DRIVER_NAME, sizeof(card->driver));
 	strncpy(card->shortname, platdata->card_config->shortname,
 			sizeof(card->shortname));
-	strncpy(card->longname, platdata->card_config->longname, sizeof(card->longname));
+	strncpy(card->longname, platdata->card_config->longname,
+			sizeof(card->longname));
 	ret = snd_card_register(card);
 	if (ret == 0) {
 		platform_set_drvdata(pdev, card);
@@ -398,8 +403,8 @@ static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *drv_info)
 		drv_info->snd_drv_dev[i] = snd_drv_dev;
 		/* advance pointer to the next card configuration */
 		cur_card_config += sizeof(struct vaudioif_card_config) +
-				snd_dev_platdata.card_config->num_streams *
-				sizeof(struct vaudioif_stream_config);
+				snd_dev_platdata.card_config->num_pcm_instances *
+				sizeof(struct vaudioif_pcm_instance_config);
 	}
 	LOG0("Added %d cards", num_cards);
 	return 0;
@@ -507,7 +512,8 @@ static void xen_drv_vaudio_free(struct xen_drv_vaudio_info *info)
 	LOG0();
 }
 
-static int xen_drv_vaudio_create(struct xenbus_device *xbdev, struct xen_drv_vaudio_info *info)
+static int xen_drv_vaudio_create(struct xenbus_device *xbdev,
+		struct xen_drv_vaudio_info *info)
 {
 	LOG0();
 	return 0;
