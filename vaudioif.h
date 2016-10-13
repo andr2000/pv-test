@@ -29,6 +29,9 @@
 
 struct vaudioif_stream_config {
 	uint8_t  type;
+} __attribute__((packed));
+
+struct vaudioif_card_pcm_hw_config {
 	uint64_t formats;
 	uint64_t buffer_bytes_max;
 	uint64_t period_bytes_min;
@@ -52,8 +55,11 @@ struct vaudioif_card_config {
 	char longname[80];
 	/* number of streams in this configuration */
 	uint8_t num_streams;
+	/* PCM hardware descriptor */
+	struct vaudioif_card_pcm_hw_config card_pcm_hw;
 
-	/* streams configurations - must be the last field in the structure */
+	/* streams configurations - must be the last field in the structure
+	 * configuration data will be appended here: stream[num_streams] */
 	struct vaudioif_stream_config stream[0];
 } __attribute__((packed));
 

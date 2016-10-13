@@ -1,19 +1,12 @@
 struct vaudioif_stream_config DBG_CARD_CONFIG_PLAYBACK = {
 	.type = VAUDIOIF_PROTO_STREAM_TYPE_PLAYBACK,
-	.formats = SNDRV_PCM_FMTBIT_S16_LE,
-	.buffer_bytes_max = ((65536-64)*8),
-	.period_bytes_max = (65536-64),
-	.periods_min = 2,
-	.periods_max = 8,
-	.channels_min = 2,
-	.channels_max = 2,
-	.rates = SNDRV_PCM_RATE_48000|SNDRV_PCM_RATE_96000|SNDRV_PCM_RATE_192000,
-	.rate_min = 48000,
-	.rate_max = 192000,
 };
 
 struct vaudioif_stream_config DBG_CARD_CONFIG_CAPTURE = {
 	.type = VAUDIOIF_PROTO_STREAM_TYPE_CAPTURE,
+};
+
+struct vaudioif_card_pcm_hw_config DBG_CARD_PCM_HW_CONFIG = {
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	.buffer_bytes_max = ((65536-64)*8),
 	.period_bytes_max = (65536-64),
