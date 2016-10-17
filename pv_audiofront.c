@@ -71,14 +71,30 @@ struct snd_dev_card_platdata {
 	struct vaudioif_card_config *card_config;
 };
 
+struct snd_dev_pcm_instance_info;
+
 struct snd_dev_card_info {
 	struct xen_drv_vaudio_info *xen_drv_info;
 	struct snd_card *card;
+	struct snd_pcm_hardware pcm_hw;
 	/* array of PCM instances of this card */
 	int num_pcm_instances;
-	struct snd_pcm **pcm;
-	struct snd_pcm_hardware pcm_hw;
-	int index;
+	struct snd_dev_pcm_instance_info *pcm_instance;
+};
+
+struct snd_dev_pcm_stream_info;
+
+struct snd_dev_pcm_instance_info {
+	struct snd_dev_card_info *card_info;
+	struct snd_pcm *pcm;
+	int num_pcm_streams_pb;
+	struct snd_dev_pcm_stream_info *streams_pb;
+	int num_pcm_streams_cap;
+	struct snd_dev_pcm_stream_info *streams_cap;
+};
+
+struct snd_dev_pcm_stream_info {
+	int dummy;
 };
 
 /* XXX: remove me */
@@ -91,7 +107,29 @@ struct snd_dev_card_info {
  */
 int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 {
-	LOG0("Substream is %s", substream->name);
+	struct snd_dev_pcm_instance_info *pcm_instance =
+			snd_pcm_substream_chip(substream);
+	struct snd_dev_pcm_stream_info *stream_info;
+	struct snd_pcm_runtime *runtime = substream->runtime;
+
+	LOG0("Substream is %s direction %d number %d", substream->name,
+			substream->stream, substream->number);
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		stream_info = &pcm_instance->streams_pb[substream->number];
+	else
+		stream_info = &pcm_instance->streams_cap[substream->number];
+
+	runtime->hw = pcm_instance->card_info->pcm_hw;
+	runtime->hw.info &= ~(SNDRV_PCM_INFO_MMAP |
+			      SNDRV_PCM_INFO_MMAP_VALID |
+			      SNDRV_PCM_INFO_DOUBLE |
+			      SNDRV_PCM_INFO_BATCH |
+			      SNDRV_PCM_INFO_NONINTERLEAVED |
+			      SNDRV_PCM_INFO_RESUME |
+			      SNDRV_PCM_INFO_PAUSE);
+	runtime->hw.info |= SNDRV_PCM_INFO_INTERLEAVED;
+
+	stream_info->dummy = substream->number;
 	return 0;
 }
 
@@ -220,7 +258,7 @@ static struct snd_pcm_ops snd_drv_pcm_capture_ops = {
 
 static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 		struct vaudioif_pcm_instance_config *instance_config,
-		struct snd_pcm **new_pcm)
+		struct snd_dev_pcm_instance_info *pcm_instance_info)
 {
 	struct snd_pcm *pcm;
 	int ret;
@@ -230,6 +268,27 @@ static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 			instance_config->device,
 			instance_config->num_streams_pb,
 			instance_config->num_streams_cap);
+	pcm_instance_info->card_info = card_info;
+	/* allocate info for playback streams if any */
+	if (instance_config->num_streams_pb) {
+		pcm_instance_info->streams_pb = devm_kzalloc(&card_info->card->card_dev,
+			instance_config->num_streams_pb *
+			sizeof(struct snd_dev_pcm_stream_info),
+			GFP_KERNEL);
+		if (!pcm_instance_info->streams_pb)
+			return -ENOMEM;
+	}
+	/* allocate info for capture streams if any */
+	if (instance_config->num_streams_cap) {
+		pcm_instance_info->streams_cap = devm_kzalloc(&card_info->card->card_dev,
+			instance_config->num_streams_cap *
+			sizeof(struct snd_dev_pcm_stream_info),
+			GFP_KERNEL);
+		if (!pcm_instance_info->streams_cap)
+			return -ENOMEM;
+	}
+	pcm_instance_info->num_pcm_streams_pb = instance_config->num_streams_pb;
+	pcm_instance_info->num_pcm_streams_cap = instance_config->num_streams_cap;
 	ret = snd_pcm_new(card_info->card, instance_config->name,
 			instance_config->device,
 			instance_config->num_streams_pb,
@@ -243,10 +302,10 @@ static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 	if (instance_config->num_streams_cap)
 		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE,
 				&snd_drv_pcm_capture_ops);
-	pcm->private_data = card_info;
+	pcm->private_data = pcm_instance_info;
 	pcm->info_flags = 0;
 	strcpy(pcm->name, "Virtual card PCM");
-	*new_pcm = pcm;
+	pcm_instance_info->pcm = pcm;
 	return 0;
 }
 
@@ -273,19 +332,18 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	/* card_info is allocated and maintained by snd_card_new */
 	card_info = card->private_data;
 	card_info->xen_drv_info = platdata->xen_drv_info;
-	card_info->index = platdata->index;
 	card_info->card = card;
-	card_info->pcm = devm_kzalloc(&pdev->dev,
+	card_info->pcm_instance = devm_kzalloc(&pdev->dev,
 			platdata->card_config->num_pcm_instances *
-			sizeof(struct snd_pcm *), GFP_KERNEL);
-	if (!card_info->pcm)
+			sizeof(struct snd_dev_pcm_instance_info), GFP_KERNEL);
+	if (!card_info->pcm_instance)
 		goto fail;
 	card_info->num_pcm_instances = platdata->card_config->num_pcm_instances;
 
 	for (i = 0; i < platdata->card_config->num_pcm_instances; i++) {
 		ret = snd_drv_vaudio_new_pcm(card_info,
 				&platdata->card_config->pcm_instance[i],
-				&card_info->pcm[i]);
+				&card_info->pcm_instance[i]);
 		if (ret < 0)
 			goto fail;
 	}
@@ -344,7 +402,7 @@ static int snd_drv_vaudio_remove(struct platform_device *pdev)
 	struct snd_dev_card_info *info;
 	struct snd_card *card = platform_get_drvdata(pdev);
 	info = card->private_data;
-	LOG0("Removing Card %d", info->index);
+	LOG0("Removing Card %d", info->card->number);
 	snd_card_free(card);
 	return 0;
 }
