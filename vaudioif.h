@@ -72,6 +72,9 @@ struct vaudioif_card_config {
  * REQUEST CODES.
  */
 
+/* Operation completed successfully. */
+#define VAUDIOIF_OP_STATUS_OK	0
+
 /* TODO: put description */
 #define VAUDIOIF_OP_READ_CONFIG	0
 
@@ -80,8 +83,9 @@ struct xen_vaudioif_ctrl_request {
 } __attribute__((__packed__));
 
 struct xen_vaudioif_ctrl_response {
+	uint8_t operation;	/* copied from request */
 	int8_t	status;
-};
+} __attribute__((__packed__));
 
 /*
  * Generate vaudioif ring structures and types.

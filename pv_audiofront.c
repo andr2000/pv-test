@@ -4,6 +4,7 @@
  *
  *  Based on sound/drivers/dummy.c
  *  Based on drivers/net/xen-netfront.c
+ *  Based on drivers/block/xen-blkfront.c
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -37,6 +38,7 @@
 #include <xen/xenbus.h>
 #include <xen/events.h>
 #include <xen/grant_table.h>
+#include <xen/interface/io/ring.h>
 
 #include "vaudioif.h"
 
@@ -65,6 +67,7 @@ struct xen_vaudioif_ctrl_channel {
 	int ring_ref;
 	unsigned int evt_channel;
 	unsigned int evt_channel_irq;
+	spinlock_t ctrl_lock;
 };
 
 struct xen_drv_vaudio_info {
@@ -618,15 +621,48 @@ static void xen_drv_vaudio_free_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
 
 static irqreturn_t xen_drv_vaudio_ctrl_interrupt(int irq, void *dev_id)
 {
-#if 0
-	struct netfront_queue *queue = dev_id;
+	struct xen_drv_vaudio_info *drv_info = dev_id;
+	struct xen_vaudioif_ctrl_channel *channel;
+	struct xen_vaudioif_ctrl_response *resp;
+	RING_IDX i, rp;
 	unsigned long flags;
 
-	spin_lock_irqsave(&queue->tx_lock, flags);
-	xennet_tx_buf_gc(queue);
-	spin_unlock_irqrestore(&queue->tx_lock, flags);
+	channel = &drv_info->ctrl_channel;
+	spin_lock_irqsave(&channel->ctrl_lock, flags);
 
+#if 0
+	if (unlikely(info->connected != BLKIF_STATE_CONNECTED)) {
+		spin_unlock_irqrestore(&info->io_lock, flags);
+		return IRQ_HANDLED;
+	}
 #endif
+
+ again:
+	rp = channel->ring.sring->rsp_prod;
+	rmb(); /* Ensure we see queued responses up to 'rp'. */
+
+	for (i = channel->ring.rsp_cons; i != rp; i++) {
+		resp = RING_GET_RESPONSE(&channel->ring, i);
+		switch (resp->operation) {
+		case VAUDIOIF_OP_READ_CONFIG:
+			LOG0("Got response on VAUDIOIF_OP_READ_CONFIG");
+			break;
+		default:
+			BUG();
+		}
+	}
+
+	channel->ring.rsp_cons = i;
+
+	if (i != channel->ring.req_prod_pvt) {
+		int more_to_do;
+		RING_FINAL_CHECK_FOR_RESPONSES(&channel->ring, more_to_do);
+		if (more_to_do)
+			goto again;
+	} else
+		channel->ring.sring->rsp_event = i + 1;
+
+	spin_unlock_irqrestore(&channel->ctrl_lock, flags);
 	return IRQ_HANDLED;
 }
 
@@ -641,6 +677,7 @@ static int xen_drv_vaudio_alloc_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
 	xen_bus_dev = drv_info->xen_bus_dev;
 	channel = &drv_info->ctrl_channel;
 	LOG0("Setting up ring");
+	spin_lock_init(&channel->ctrl_lock);
 	channel->ring_ref = GRANT_INVALID_REF;
 	channel->ring.sring = NULL;
 	sring = (struct xen_vaudioif_ctrl_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
