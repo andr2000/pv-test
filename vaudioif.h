@@ -18,9 +18,11 @@
  *
  */
 
-
 #ifndef __XEN_PUBLIC_VAUDIOIF_H__
 #define __XEN_PUBLIC_VAUDIOIF_H__
+
+#include <xen/interface/io/ring.h>
+#include <xen/interface/grant_table.h>
 
 #define VAUDIOIF_PROTO_VERSION 0x0001
 
@@ -64,9 +66,26 @@ struct vaudioif_card_config {
 	struct vaudioif_pcm_instance_config pcm_instance[0];
 } __attribute__((packed));
 
-/* get the size of the card configuration structure */
-#define VAUDIOIF_CARD_CONFIG_SIZEOF(a)	((size_t)(\
-	sizeof(struct vaudioif_card_config) +\
-	(a)->num_streams * sizeof(struct vaudioif_stream_config)))
+/*
+ * REQUEST CODES.
+ */
+
+/* TODO: put description */
+#define VAUDIOIF_OP_READ_CONFIG	0
+
+struct xen_vaudioif_ctrl_request {
+	uint8_t operation;
+} __attribute__((__packed__));
+
+struct xen_vaudioif_ctrl_response {
+	int8_t	status;
+};
+
+/*
+ * Generate vaudioif ring structures and types.
+ */
+
+DEFINE_RING_TYPES(xen_vaudioif_ctrl, struct xen_vaudioif_ctrl_request,
+		struct xen_vaudioif_ctrl_response);
 
 #endif /* __XEN_PUBLIC_VAUDIOIF_H__ */

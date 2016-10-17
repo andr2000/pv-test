@@ -26,6 +26,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
+#include <linux/irq.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -34,10 +35,14 @@
 #include <xen/xen.h>
 #include <xen/platform_pci.h>
 #include <xen/xenbus.h>
+#include <xen/events.h>
+#include <xen/grant_table.h>
 
 #include "vaudioif.h"
 
 #define VAUDIO_DRIVER_NAME	"vaudio"
+
+#define GRANT_INVALID_REF	0
 
 #ifdef SILENT
 #define LOG(log_level, fmt, ...)
@@ -53,10 +58,21 @@
 
 int debug_level;
 
+struct xen_drv_vaudio_info;
+
+struct xen_vaudioif_ctrl_channel {
+	struct xen_vaudioif_ctrl_front_ring ring;
+	int ring_ref;
+	unsigned int evt_channel;
+	unsigned int evt_channel_irq;
+};
+
 struct xen_drv_vaudio_info {
 	struct xenbus_device *xen_bus_dev;
 	/* array of virtual audio platform devices */
 	struct platform_device **snd_drv_dev;
+
+	struct xen_vaudioif_ctrl_channel ctrl_channel;
 
 	/* XXX: this comes from back to end configuration negotiation */
 	/* number of virtual cards */
@@ -491,10 +507,10 @@ fail:
  * Xen driver start
  */
 
-static int xen_drv_talk_to_audioback(struct xenbus_device *xbdev,
-				struct xen_drv_vaudio_info *info);
-static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *info);
-static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info);
+static int xen_drv_talk_to_audioback(struct xenbus_device *xen_bus_dev,
+				struct xen_drv_vaudio_info *drv_info);
+static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *drv_info);
+static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *drv_info);
 
 static int xen_drv_vaudio_remove(struct xenbus_device *dev);
 
@@ -539,24 +555,26 @@ static int xen_drv_vaudio_resume(struct xenbus_device *dev)
 	return 0;
 }
 
-static void xen_drv_vaudio_backend_changed(struct xenbus_device *dev,
+static void xen_drv_vaudio_backend_changed(struct xenbus_device *xen_bus_dev,
 				enum xenbus_state backend_state)
 {
-	struct xen_drv_vaudio_info *info = dev_get_drvdata(&dev->dev);
+	struct xen_drv_vaudio_info *info = dev_get_drvdata(&xen_bus_dev->dev);
 
 	LOG0("Backend state is %s, front is %s", xenbus_strstate(backend_state),
-			xenbus_strstate(dev->state));
+			xenbus_strstate(xen_bus_dev->state));
 	switch (backend_state) {
 	case XenbusStateReconfiguring:
 	case XenbusStateReconfigured:
 	case XenbusStateInitialising:
-	case XenbusStateInitWait:
+	case XenbusStateInitialised:
 		break;
 
-	case XenbusStateInitialised:
-		if (dev->state != XenbusStateInitialising)
+	case XenbusStateInitWait:
+#if 0
+		if (xen_bus_dev->state != XenbusStateInitialising)
 			break;
-		if (xen_drv_talk_to_audioback(dev, info) != 0)
+#endif
+		if (xen_drv_talk_to_audioback(xen_bus_dev, info) != 0)
 			break;
 		break;
 
@@ -566,7 +584,7 @@ static void xen_drv_vaudio_backend_changed(struct xenbus_device *dev,
 
 	case XenbusStateUnknown:
 	case XenbusStateClosed:
-		if (dev->state == XenbusStateClosed)
+		if (xen_bus_dev->state == XenbusStateClosed)
 			break;
 		/* Missed the backend's CLOSING state -- fallthrough */
 	case XenbusStateClosing:
@@ -575,45 +593,118 @@ static void xen_drv_vaudio_backend_changed(struct xenbus_device *dev,
 	}
 }
 
-static void xen_drv_vaudio_free(struct xen_drv_vaudio_info *info)
+static void xen_drv_vaudio_free_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
 {
-	LOG0();
+	struct xenbus_device *xen_bus_dev;
+	struct xen_vaudioif_ctrl_channel *channel;
+
+	LOG0("Cleaning up ring");
+	xen_bus_dev = drv_info->xen_bus_dev;
+	channel = &drv_info->ctrl_channel;
+	if (channel->evt_channel_irq)
+		unbind_from_irqhandler(channel->evt_channel_irq, drv_info);
+
+	if (channel->evt_channel)
+		xenbus_free_evtchn(xen_bus_dev, channel->evt_channel);
+	channel->evt_channel = 0;
+	/* End access and free the pages */
+	if (channel->ring_ref != GRANT_INVALID_REF)
+		gnttab_end_foreign_access(channel->ring_ref, 0,
+				(unsigned long)channel->ring.sring);
+	channel->ring.sring = NULL;
 }
 
-static int xen_drv_vaudio_create(struct xenbus_device *xbdev,
-		struct xen_drv_vaudio_info *info)
+static irqreturn_t xen_drv_vaudio_ctrl_interrupt(int irq, void *dev_id)
 {
-	LOG0();
+#if 0
+	struct netfront_queue *queue = dev_id;
+	unsigned long flags;
+
+	spin_lock_irqsave(&queue->tx_lock, flags);
+	xennet_tx_buf_gc(queue);
+	spin_unlock_irqrestore(&queue->tx_lock, flags);
+
+#endif
+	return IRQ_HANDLED;
+}
+
+static int xen_drv_vaudio_alloc_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
+{
+	struct xenbus_device *xen_bus_dev;
+	struct xen_vaudioif_ctrl_channel *channel;
+	struct xen_vaudioif_ctrl_sring *sring;
+	grant_ref_t gref;
+	int ret;
+
+	xen_bus_dev = drv_info->xen_bus_dev;
+	channel = &drv_info->ctrl_channel;
+	LOG0("Setting up ring");
+	channel->ring_ref = GRANT_INVALID_REF;
+	channel->ring.sring = NULL;
+	sring = (struct xen_vaudioif_ctrl_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
+	if (!sring) {
+		ret = -ENOMEM;
+		xenbus_dev_fatal(xen_bus_dev, ret, "allocating ring page");
+		goto fail;
+	}
+	SHARED_RING_INIT(sring);
+	FRONT_RING_INIT(&channel->ring, sring, PAGE_SIZE);
+
+	ret = xenbus_grant_ring(xen_bus_dev, sring, 1, &gref);
+	if (ret < 0)
+		goto fail;
+	channel->ring_ref = gref;
+
+	ret = xenbus_alloc_evtchn(xen_bus_dev, &channel->evt_channel);
+	if (ret < 0)
+		goto fail;
+
+	ret = bind_evtchn_to_irqhandler(channel->evt_channel,
+			xen_drv_vaudio_ctrl_interrupt,
+			0, xen_bus_dev->devicetype, drv_info);
+
+	if (ret < 0)
+		goto fail;
+	channel->evt_channel_irq = ret;
 	return 0;
+
+fail:
+	xenbus_dev_fatal(xen_bus_dev, ret, "allocating ring");
+	xen_drv_vaudio_free_ctrl_ring(drv_info);
+	return ret;
 }
 
 /* Common code used when first setting up, and when resuming. */
-static int xen_drv_talk_to_audioback(struct xenbus_device *xbdev,
-				struct xen_drv_vaudio_info *info)
+static int xen_drv_talk_to_audioback(struct xenbus_device *xen_bus_dev,
+				struct xen_drv_vaudio_info *drv_info)
 {
 	int ret;
 
-	LOG0();
-	ret = xen_drv_vaudio_create(xbdev, info);
+	LOG0("Allocating and opening control channel");
+	/* allocate and open control channel */
+	ret = xen_drv_vaudio_alloc_ctrl_ring(drv_info);
 	if (ret)
 		goto out;
-	xenbus_switch_state(xbdev, XenbusStateInitialised);
+	xenbus_switch_state(xen_bus_dev, XenbusStateInitialised);
 out:
 	return ret;
 }
 
-static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *info)
+static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *drv_info)
 {
 	int ret;
-	LOG0();
-	ret = snd_drv_vaudio_init(info);
-	xenbus_switch_state(info->xen_bus_dev, XenbusStateConnected);
+	LOG0("Requesting audio configuration");
+	/* ask backend for configuration */
+	LOG0("Got audio configuration, initializing");
+	ret = snd_drv_vaudio_init(drv_info);
+	LOG0("Audio initialized");
+	xenbus_switch_state(drv_info->xen_bus_dev, XenbusStateConnected);
 }
 
-static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *info)
+static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *drv_info)
 {
 	LOG0();
-	xen_drv_vaudio_free(info);
+	xen_drv_vaudio_free_ctrl_ring(drv_info);
 }
 
 /*
