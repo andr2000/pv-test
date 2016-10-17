@@ -513,6 +513,7 @@ static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *drv_
 static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *drv_info);
 
 static int xen_drv_vaudio_remove(struct xenbus_device *dev);
+static void xen_drv_vaudio_free_ctrl_ring(struct xen_drv_vaudio_info *drv_info);
 
 static int xen_drv_vaudio_probe(struct xenbus_device *xen_bus_dev,
 				const struct xenbus_device_id *id)
@@ -542,10 +543,10 @@ fail:
 
 static int xen_drv_vaudio_remove(struct xenbus_device *dev)
 {
-	struct xen_drv_vaudio_info *info = dev_get_drvdata(&dev->dev);
+	struct xen_drv_vaudio_info *drv_info = dev_get_drvdata(&dev->dev);
 
-	LOG0("Removing audio driver");
-	snd_drv_vaudio_cleanup(info);
+	snd_drv_vaudio_cleanup(drv_info);
+	xen_drv_vaudio_free_ctrl_ring(drv_info);
 	return 0;
 }
 
@@ -576,6 +577,7 @@ static void xen_drv_vaudio_backend_changed(struct xenbus_device *xen_bus_dev,
 #endif
 		if (xen_drv_talk_to_audioback(xen_bus_dev, info) != 0)
 			break;
+		xenbus_switch_state(xen_bus_dev, XenbusStateInitialised);
 		break;
 
 	case XenbusStateConnected:
@@ -678,16 +680,50 @@ fail:
 static int xen_drv_talk_to_audioback(struct xenbus_device *xen_bus_dev,
 				struct xen_drv_vaudio_info *drv_info)
 {
-	int ret;
+	struct xenbus_transaction xbt;
+	const char *message;
+	int err;
 
-	LOG0("Allocating and opening control channel");
+	LOG0("Allocating and opening control ring channel");
 	/* allocate and open control channel */
-	ret = xen_drv_vaudio_alloc_ctrl_ring(drv_info);
-	if (ret)
+	err = xen_drv_vaudio_alloc_ctrl_ring(drv_info);
+	if (err)
 		goto out;
-	xenbus_switch_state(xen_bus_dev, XenbusStateInitialised);
+again:
+	err = xenbus_transaction_start(&xbt);
+	if (err) {
+		xenbus_dev_fatal(xen_bus_dev, err, "starting transaction");
+		goto destroy_ring;
+	}
+
+	/* Write control channel ring reference */
+	err = xenbus_printf(xbt, xen_bus_dev->nodename,
+			VAUDIOIF_PROTO_RING_NAME_CTRL, "%u",
+			drv_info->ctrl_channel.ring_ref);
+	if (err) {
+		message = "writing ctrl-ring-ref";
+		goto abort_transaction;
+	}
+
+	err = xenbus_transaction_end(xbt, 0);
+	if (err) {
+		if (err == -EAGAIN)
+			goto again;
+		xenbus_dev_fatal(xen_bus_dev, err, "completing transaction");
+		goto destroy_ring;
+	}
+	LOG0("Allocated and opened control ring channel: "
+			VAUDIOIF_PROTO_RING_NAME_CTRL " ->%u",
+			drv_info->ctrl_channel.ring_ref);
+	return 0;
+
+abort_transaction:
+	xenbus_dev_fatal(xen_bus_dev, err, "%s", message);
+	xenbus_transaction_end(xbt, 1);
+destroy_ring:
+	xen_drv_vaudio_free_ctrl_ring(drv_info);
 out:
-	return ret;
+	return err;
 }
 
 static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *drv_info)

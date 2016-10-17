@@ -26,6 +26,8 @@
 
 #define VAUDIOIF_PROTO_VERSION 0x0001
 
+#define VAUDIOIF_PROTO_RING_NAME_CTRL "ctrl-ring-ref"
+
 struct vaudioif_pcm_instance_config {
 	char name[80];
 	/* device number */
