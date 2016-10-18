@@ -66,8 +66,8 @@ struct xen_vsndif_ctrl_channel {
 	struct xen_vsndif_ctrl_front_ring ring;
 	int ring_ref;
 	unsigned int evt_channel;
-	unsigned int evt_channel_irq;
-	spinlock_t ctrl_lock;
+	unsigned int irq;
+	spinlock_t io_lock;
 };
 
 struct xen_drv_vsnd_info {
@@ -606,8 +606,8 @@ static void xen_drv_vsnd_free_ctrl_ring(struct xen_drv_vsnd_info *drv_info)
 	LOG0("Cleaning up ring");
 	xen_bus_dev = drv_info->xen_bus_dev;
 	channel = &drv_info->ctrl_channel;
-	if (channel->evt_channel_irq)
-		unbind_from_irqhandler(channel->evt_channel_irq, drv_info);
+	if (channel->irq)
+		unbind_from_irqhandler(channel->irq, drv_info);
 
 	if (channel->evt_channel)
 		xenbus_free_evtchn(xen_bus_dev, channel->evt_channel);
@@ -628,7 +628,7 @@ static irqreturn_t xen_drv_vsnd_ctrl_interrupt(int irq, void *dev_id)
 	unsigned long flags;
 
 	channel = &drv_info->ctrl_channel;
-	spin_lock_irqsave(&channel->ctrl_lock, flags);
+	spin_lock_irqsave(&channel->io_lock, flags);
 
 #if 0
 	if (unlikely(info->connected != BLKIF_STATE_CONNECTED)) {
@@ -662,7 +662,7 @@ static irqreturn_t xen_drv_vsnd_ctrl_interrupt(int irq, void *dev_id)
 	} else
 		channel->ring.sring->rsp_event = i + 1;
 
-	spin_unlock_irqrestore(&channel->ctrl_lock, flags);
+	spin_unlock_irqrestore(&channel->io_lock, flags);
 	return IRQ_HANDLED;
 }
 
@@ -677,7 +677,7 @@ static int xen_drv_vsnd_alloc_ctrl_ring(struct xen_drv_vsnd_info *drv_info)
 	xen_bus_dev = drv_info->xen_bus_dev;
 	channel = &drv_info->ctrl_channel;
 	LOG0("Setting up ring");
-	spin_lock_init(&channel->ctrl_lock);
+	spin_lock_init(&channel->io_lock);
 	channel->ring_ref = GRANT_INVALID_REF;
 	channel->ring.sring = NULL;
 	sring = (struct xen_vsndif_ctrl_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
@@ -704,7 +704,7 @@ static int xen_drv_vsnd_alloc_ctrl_ring(struct xen_drv_vsnd_info *drv_info)
 
 	if (ret < 0)
 		goto fail;
-	channel->evt_channel_irq = ret;
+	channel->irq = ret;
 	return 0;
 
 fail:
