@@ -1,1 +1,1 @@
-obj-m  := pv_audiofront.o
+obj-m  := xen-sndfront.o

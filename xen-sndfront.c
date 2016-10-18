@@ -1,5 +1,5 @@
 /*
- *  Xen para-virtual audio device
+ *  Xen para-virtual sound device
  *  Copyright (c) 2016, Oleksandr Andrushchenko
  *
  *  Based on sound/drivers/dummy.c
@@ -40,9 +40,9 @@
 #include <xen/grant_table.h>
 #include <xen/interface/io/ring.h>
 
-#include "vaudioif.h"
+#include "vsndif.h"
 
-#define VAUDIO_DRIVER_NAME	"vaudio"
+#define VSND_DRIVER_NAME	"vsnd"
 
 #define GRANT_INVALID_REF	0
 
@@ -51,7 +51,7 @@
 #else
 #define LOG(log_level, fmt, ...) \
 		do { \
-			printk(VAUDIO_DRIVER_NAME #log_level " (%s:%d): " fmt "\n", \
+			printk(VSND_DRIVER_NAME #log_level " (%s:%d): " fmt "\n", \
 					__FUNCTION__, __LINE__ , ## __VA_ARGS__); \
 		} while (0)
 #endif
@@ -60,40 +60,40 @@
 
 int debug_level;
 
-struct xen_drv_vaudio_info;
+struct xen_drv_vsnd_info;
 
-struct xen_vaudioif_ctrl_channel {
-	struct xen_vaudioif_ctrl_front_ring ring;
+struct xen_vsndif_ctrl_channel {
+	struct xen_vsndif_ctrl_front_ring ring;
 	int ring_ref;
 	unsigned int evt_channel;
 	unsigned int evt_channel_irq;
 	spinlock_t ctrl_lock;
 };
 
-struct xen_drv_vaudio_info {
+struct xen_drv_vsnd_info {
 	struct xenbus_device *xen_bus_dev;
-	/* array of virtual audio platform devices */
+	/* array of virtual sound platform devices */
 	struct platform_device **snd_drv_dev;
 
-	struct xen_vaudioif_ctrl_channel ctrl_channel;
+	struct xen_vsndif_ctrl_channel ctrl_channel;
 
 	/* XXX: this comes from back to end configuration negotiation */
 	/* number of virtual cards */
 	int cfg_num_cards;
 	/* card configuration */
-	struct vaudioif_card_config *cfg_cards;
+	struct vsndif_card_config *cfg_cards;
 };
 
 struct snd_dev_card_platdata {
-	struct xen_drv_vaudio_info *xen_drv_info;
+	struct xen_drv_vsnd_info *xen_drv_info;
 	int index;
-	struct vaudioif_card_config *card_config;
+	struct vsndif_card_config *card_config;
 };
 
 struct snd_dev_pcm_instance_info;
 
 struct snd_dev_card_info {
-	struct xen_drv_vaudio_info *xen_drv_info;
+	struct xen_drv_vsnd_info *xen_drv_info;
 	struct snd_card *card;
 	struct snd_pcm_hardware pcm_hw;
 	/* array of PCM instances of this card */
@@ -117,12 +117,12 @@ struct snd_dev_pcm_stream_info {
 };
 
 /* XXX: remove me */
-#include "dbg_pv_audiofront.c"
+#include "dbg_xen_sndfront.c"
 /* XXX: remove me */
 
 
 /*
- * Audio driver start
+ * Sound driver start
  */
 int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 {
@@ -275,8 +275,8 @@ static struct snd_pcm_ops snd_drv_pcm_capture_ops = {
 		.copy =		snd_drv_pcm_capture_copy,
 };
 
-static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
-		struct vaudioif_pcm_instance_config *instance_config,
+static int snd_drv_vsnd_new_pcm(struct snd_dev_card_info *card_info,
+		struct vsndif_pcm_instance_config *instance_config,
 		struct snd_dev_pcm_instance_info *pcm_instance_info)
 {
 	struct snd_pcm *pcm;
@@ -328,12 +328,12 @@ static int snd_drv_vaudio_new_pcm(struct snd_dev_card_info *card_info,
 	return 0;
 }
 
-static int snd_drv_vaudio_probe(struct platform_device *pdev)
+static int snd_drv_vsnd_probe(struct platform_device *pdev)
 {
 	struct snd_dev_card_info *card_info;
 	struct snd_dev_card_platdata *platdata;
 	struct snd_card *card;
-	struct vaudioif_card_pcm_hw_config *card_pcm_hw;
+	struct vsndif_card_pcm_hw_config *card_pcm_hw;
 	char card_id[sizeof(card->id)];
 	int ret, i;
 
@@ -342,7 +342,7 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	LOG0("Will configure %d playback/capture streams",
 			platdata->card_config->num_pcm_instances);
 
-	snprintf(card_id, sizeof(card->id), VAUDIO_DRIVER_NAME "%d",
+	snprintf(card_id, sizeof(card->id), VSND_DRIVER_NAME "%d",
 			platdata->index);
 	ret = snd_card_new(&pdev->dev, platdata->index, card_id, THIS_MODULE,
 			sizeof(struct snd_dev_card_info), &card);
@@ -360,7 +360,7 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 	card_info->num_pcm_instances = platdata->card_config->num_pcm_instances;
 
 	for (i = 0; i < platdata->card_config->num_pcm_instances; i++) {
-		ret = snd_drv_vaudio_new_pcm(card_info,
+		ret = snd_drv_vsnd_new_pcm(card_info,
 				&platdata->card_config->pcm_instance[i],
 				&card_info->pcm_instance[i]);
 		if (ret < 0)
@@ -401,7 +401,7 @@ static int snd_drv_vaudio_probe(struct platform_device *pdev)
 		dummy_proc_init(dummy);
 
 #endif
-	strncpy(card->driver, VAUDIO_DRIVER_NAME, sizeof(card->driver));
+	strncpy(card->driver, VSND_DRIVER_NAME, sizeof(card->driver));
 	strncpy(card->shortname, platdata->card_config->shortname,
 			sizeof(card->shortname));
 	strncpy(card->longname, platdata->card_config->longname,
@@ -416,7 +416,7 @@ fail:
 	return ret;
 }
 
-static int snd_drv_vaudio_remove(struct platform_device *pdev)
+static int snd_drv_vsnd_remove(struct platform_device *pdev)
 {
 	struct snd_dev_card_info *info;
 	struct snd_card *card = platform_get_drvdata(pdev);
@@ -426,39 +426,39 @@ static int snd_drv_vaudio_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static struct platform_driver snd_drv_vaudio_info = {
-	.probe		= snd_drv_vaudio_probe,
-	.remove		= snd_drv_vaudio_remove,
+static struct platform_driver snd_drv_vsnd_info = {
+	.probe		= snd_drv_vsnd_probe,
+	.remove		= snd_drv_vsnd_remove,
 	.driver		= {
-		.name	= VAUDIO_DRIVER_NAME,
+		.name	= VSND_DRIVER_NAME,
 	},
 };
 
-static void snd_drv_vaudio_cleanup(struct xen_drv_vaudio_info *drv_info)
+static void snd_drv_vsnd_cleanup(struct xen_drv_vsnd_info *drv_info)
 {
 	int i;
 
-	LOG0("Cleaning audio driver");
+	LOG0("Cleaning sound driver");
 	for (i = 0; i < drv_info->cfg_num_cards; i++) {
 		struct platform_device *snd_drv_dev;
 
-		LOG0("Removing audio card %d", i);
+		LOG0("Removing sound card %d", i);
 		snd_drv_dev = drv_info->snd_drv_dev[i];
 		if (snd_drv_dev)
 			platform_device_unregister(snd_drv_dev);
 	}
-	LOG0("Removing audio driver");
-	platform_driver_unregister(&snd_drv_vaudio_info);
-	LOG0("Audio driver cleanup complete");
+	LOG0("Removing sound driver");
+	platform_driver_unregister(&snd_drv_vsnd_info);
+	LOG0("Sound driver cleanup complete");
 }
 
-static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *drv_info)
+static int snd_drv_vsnd_init(struct xen_drv_vsnd_info *drv_info)
 {
 	char *cur_card_config;
 	int i, num_cards, ret;
 
 	LOG0();
-	ret = platform_driver_register(&snd_drv_vaudio_info);
+	ret = platform_driver_register(&snd_drv_vsnd_info);
 	if (ret < 0)
 		return ret;
 
@@ -482,46 +482,46 @@ static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *drv_info)
 		snd_dev_platdata.xen_drv_info = drv_info;
 		snd_dev_platdata.index = i;
 		snd_dev_platdata.card_config =
-				(struct vaudioif_card_config *)cur_card_config;
-		snd_drv_dev = platform_device_register_data(NULL, VAUDIO_DRIVER_NAME,
+				(struct vsndif_card_config *)cur_card_config;
+		snd_drv_dev = platform_device_register_data(NULL, VSND_DRIVER_NAME,
 				i, &snd_dev_platdata, sizeof(snd_dev_platdata));
 		if (IS_ERR(snd_drv_dev))
 			goto fail;
 		drv_info->snd_drv_dev[i] = snd_drv_dev;
 		/* advance pointer to the next card configuration */
-		cur_card_config += sizeof(struct vaudioif_card_config) +
+		cur_card_config += sizeof(struct vsndif_card_config) +
 				snd_dev_platdata.card_config->num_pcm_instances *
-				sizeof(struct vaudioif_pcm_instance_config);
+				sizeof(struct vsndif_pcm_instance_config);
 	}
 	LOG0("Added %d cards", num_cards);
 	return 0;
 
 fail:
-	LOG0("Failed to register audio driver");
-	snd_drv_vaudio_cleanup(drv_info);
+	LOG0("Failed to register sound driver");
+	snd_drv_vsnd_cleanup(drv_info);
 	return -ENODEV;
 }
 
 /*
- * Audio driver stop
+ * Sound driver stop
  */
 
 /*
  * Xen driver start
  */
 
-static int xen_drv_talk_to_audioback(struct xenbus_device *xen_bus_dev,
-				struct xen_drv_vaudio_info *drv_info);
-static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *drv_info);
-static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *drv_info);
+static int xen_drv_talk_to_soundback(struct xenbus_device *xen_bus_dev,
+				struct xen_drv_vsnd_info *drv_info);
+static void xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info);
+static void xen_drv_vsnd_disconnect_backend(struct xen_drv_vsnd_info *drv_info);
 
-static int xen_drv_vaudio_remove(struct xenbus_device *dev);
-static void xen_drv_vaudio_free_ctrl_ring(struct xen_drv_vaudio_info *drv_info);
+static int xen_drv_vsnd_remove(struct xenbus_device *dev);
+static void xen_drv_vsnd_free_ctrl_ring(struct xen_drv_vsnd_info *drv_info);
 
-static int xen_drv_vaudio_probe(struct xenbus_device *xen_bus_dev,
+static int xen_drv_vsnd_probe(struct xenbus_device *xen_bus_dev,
 				const struct xenbus_device_id *id)
 {
-	struct xen_drv_vaudio_info *drv_info;
+	struct xen_drv_vsnd_info *drv_info;
 	int ret;
 
 	LOG0();
@@ -534,7 +534,7 @@ static int xen_drv_vaudio_probe(struct xenbus_device *xen_bus_dev,
 	drv_info->xen_bus_dev = xen_bus_dev;
 
 	/* FIXME: remove me */
-	ret = DBG_vaudio_run(xen_bus_dev, drv_info);
+	ret = DBG_vsnd_run(xen_bus_dev, drv_info);
 	if (ret < 0)
 		goto fail;
 	/* FIXME: remove me */
@@ -544,25 +544,25 @@ fail:
 	return ret;
 }
 
-static int xen_drv_vaudio_remove(struct xenbus_device *dev)
+static int xen_drv_vsnd_remove(struct xenbus_device *dev)
 {
-	struct xen_drv_vaudio_info *drv_info = dev_get_drvdata(&dev->dev);
+	struct xen_drv_vsnd_info *drv_info = dev_get_drvdata(&dev->dev);
 
-	snd_drv_vaudio_cleanup(drv_info);
-	xen_drv_vaudio_free_ctrl_ring(drv_info);
+	snd_drv_vsnd_cleanup(drv_info);
+	xen_drv_vsnd_free_ctrl_ring(drv_info);
 	return 0;
 }
 
-static int xen_drv_vaudio_resume(struct xenbus_device *dev)
+static int xen_drv_vsnd_resume(struct xenbus_device *dev)
 {
 	LOG0();
 	return 0;
 }
 
-static void xen_drv_vaudio_backend_changed(struct xenbus_device *xen_bus_dev,
+static void xen_drv_vsnd_backend_changed(struct xenbus_device *xen_bus_dev,
 				enum xenbus_state backend_state)
 {
-	struct xen_drv_vaudio_info *info = dev_get_drvdata(&xen_bus_dev->dev);
+	struct xen_drv_vsnd_info *info = dev_get_drvdata(&xen_bus_dev->dev);
 
 	LOG0("Backend state is %s, front is %s", xenbus_strstate(backend_state),
 			xenbus_strstate(xen_bus_dev->state));
@@ -578,13 +578,13 @@ static void xen_drv_vaudio_backend_changed(struct xenbus_device *xen_bus_dev,
 		if (xen_bus_dev->state != XenbusStateInitialising)
 			break;
 #endif
-		if (xen_drv_talk_to_audioback(xen_bus_dev, info) != 0)
+		if (xen_drv_talk_to_soundback(xen_bus_dev, info) != 0)
 			break;
 		xenbus_switch_state(xen_bus_dev, XenbusStateInitialised);
 		break;
 
 	case XenbusStateConnected:
-		xen_drv_vaudio_on_backend_connected(info);
+		xen_drv_vsnd_on_backend_connected(info);
 		break;
 
 	case XenbusStateUnknown:
@@ -593,15 +593,15 @@ static void xen_drv_vaudio_backend_changed(struct xenbus_device *xen_bus_dev,
 			break;
 		/* Missed the backend's CLOSING state -- fallthrough */
 	case XenbusStateClosing:
-		xen_drv_vaudio_disconnect_backend(info);
+		xen_drv_vsnd_disconnect_backend(info);
 		break;
 	}
 }
 
-static void xen_drv_vaudio_free_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
+static void xen_drv_vsnd_free_ctrl_ring(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev;
-	struct xen_vaudioif_ctrl_channel *channel;
+	struct xen_vsndif_ctrl_channel *channel;
 
 	LOG0("Cleaning up ring");
 	xen_bus_dev = drv_info->xen_bus_dev;
@@ -619,11 +619,11 @@ static void xen_drv_vaudio_free_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
 	channel->ring.sring = NULL;
 }
 
-static irqreturn_t xen_drv_vaudio_ctrl_interrupt(int irq, void *dev_id)
+static irqreturn_t xen_drv_vsnd_ctrl_interrupt(int irq, void *dev_id)
 {
-	struct xen_drv_vaudio_info *drv_info = dev_id;
-	struct xen_vaudioif_ctrl_channel *channel;
-	struct xen_vaudioif_ctrl_response *resp;
+	struct xen_drv_vsnd_info *drv_info = dev_id;
+	struct xen_vsndif_ctrl_channel *channel;
+	struct xen_vsndif_ctrl_response *resp;
 	RING_IDX i, rp;
 	unsigned long flags;
 
@@ -644,8 +644,8 @@ static irqreturn_t xen_drv_vaudio_ctrl_interrupt(int irq, void *dev_id)
 	for (i = channel->ring.rsp_cons; i != rp; i++) {
 		resp = RING_GET_RESPONSE(&channel->ring, i);
 		switch (resp->operation) {
-		case VAUDIOIF_OP_READ_CONFIG:
-			LOG0("Got response on VAUDIOIF_OP_READ_CONFIG");
+		case VSNDIF_OP_READ_CONFIG:
+			LOG0("Got response on VSNDIF_OP_READ_CONFIG");
 			break;
 		default:
 			BUG();
@@ -666,11 +666,11 @@ static irqreturn_t xen_drv_vaudio_ctrl_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int xen_drv_vaudio_alloc_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
+static int xen_drv_vsnd_alloc_ctrl_ring(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev;
-	struct xen_vaudioif_ctrl_channel *channel;
-	struct xen_vaudioif_ctrl_sring *sring;
+	struct xen_vsndif_ctrl_channel *channel;
+	struct xen_vsndif_ctrl_sring *sring;
 	grant_ref_t gref;
 	int ret;
 
@@ -680,7 +680,7 @@ static int xen_drv_vaudio_alloc_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
 	spin_lock_init(&channel->ctrl_lock);
 	channel->ring_ref = GRANT_INVALID_REF;
 	channel->ring.sring = NULL;
-	sring = (struct xen_vaudioif_ctrl_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
+	sring = (struct xen_vsndif_ctrl_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
 	if (!sring) {
 		ret = -ENOMEM;
 		xenbus_dev_fatal(xen_bus_dev, ret, "allocating ring page");
@@ -699,7 +699,7 @@ static int xen_drv_vaudio_alloc_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
 		goto fail;
 
 	ret = bind_evtchn_to_irqhandler(channel->evt_channel,
-			xen_drv_vaudio_ctrl_interrupt,
+			xen_drv_vsnd_ctrl_interrupt,
 			0, xen_bus_dev->devicetype, drv_info);
 
 	if (ret < 0)
@@ -709,13 +709,13 @@ static int xen_drv_vaudio_alloc_ctrl_ring(struct xen_drv_vaudio_info *drv_info)
 
 fail:
 	xenbus_dev_fatal(xen_bus_dev, ret, "allocating ring");
-	xen_drv_vaudio_free_ctrl_ring(drv_info);
+	xen_drv_vsnd_free_ctrl_ring(drv_info);
 	return ret;
 }
 
 /* Common code used when first setting up, and when resuming. */
-static int xen_drv_talk_to_audioback(struct xenbus_device *xen_bus_dev,
-				struct xen_drv_vaudio_info *drv_info)
+static int xen_drv_talk_to_soundback(struct xenbus_device *xen_bus_dev,
+				struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_transaction xbt;
 	const char *message;
@@ -723,7 +723,7 @@ static int xen_drv_talk_to_audioback(struct xenbus_device *xen_bus_dev,
 
 	LOG0("Allocating and opening control ring channel");
 	/* allocate and open control channel */
-	err = xen_drv_vaudio_alloc_ctrl_ring(drv_info);
+	err = xen_drv_vsnd_alloc_ctrl_ring(drv_info);
 	if (err)
 		goto out;
 again:
@@ -735,7 +735,7 @@ again:
 
 	/* Write control channel ring reference */
 	err = xenbus_printf(xbt, xen_bus_dev->nodename,
-			VAUDIOIF_PROTO_RING_NAME_CTRL, "%u",
+			VSNDIF_PROTO_RING_NAME_CTRL, "%u",
 			drv_info->ctrl_channel.ring_ref);
 	if (err) {
 		message = "writing ctrl-ring-ref";
@@ -750,7 +750,7 @@ again:
 		goto destroy_ring;
 	}
 	LOG0("Allocated and opened control ring channel: "
-			VAUDIOIF_PROTO_RING_NAME_CTRL " ->%u",
+			VSNDIF_PROTO_RING_NAME_CTRL " ->%u",
 			drv_info->ctrl_channel.ring_ref);
 	return 0;
 
@@ -758,70 +758,70 @@ abort_transaction:
 	xenbus_dev_fatal(xen_bus_dev, err, "%s", message);
 	xenbus_transaction_end(xbt, 1);
 destroy_ring:
-	xen_drv_vaudio_free_ctrl_ring(drv_info);
+	xen_drv_vsnd_free_ctrl_ring(drv_info);
 out:
 	return err;
 }
 
-static void xen_drv_vaudio_on_backend_connected(struct xen_drv_vaudio_info *drv_info)
+static void xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
 {
 	int ret;
-	LOG0("Requesting audio configuration");
+	LOG0("Requesting sound configuration");
 	/* ask backend for configuration */
-	LOG0("Got audio configuration, initializing");
-	ret = snd_drv_vaudio_init(drv_info);
-	LOG0("Audio initialized");
+	LOG0("Got sound configuration, initializing");
+	ret = snd_drv_vsnd_init(drv_info);
+	LOG0("Sound initialized");
 	xenbus_switch_state(drv_info->xen_bus_dev, XenbusStateConnected);
 }
 
-static void xen_drv_vaudio_disconnect_backend(struct xen_drv_vaudio_info *drv_info)
+static void xen_drv_vsnd_disconnect_backend(struct xen_drv_vsnd_info *drv_info)
 {
 	LOG0();
-	xen_drv_vaudio_free_ctrl_ring(drv_info);
+	xen_drv_vsnd_free_ctrl_ring(drv_info);
 }
 
 /*
  * Xen driver stop
  */
 
-static const struct xenbus_device_id xen_drv_vaudio_ids[] = {
-	{ VAUDIO_DRIVER_NAME },
+static const struct xenbus_device_id xen_drv_vsnd_ids[] = {
+	{ VSND_DRIVER_NAME },
 	{ "" }
 };
 
-static struct xenbus_driver xen_vaudio_driver = {
-	.ids = xen_drv_vaudio_ids,
-	.probe = xen_drv_vaudio_probe,
-	.remove = xen_drv_vaudio_remove,
-	.resume = xen_drv_vaudio_resume,
-	.otherend_changed = xen_drv_vaudio_backend_changed,
+static struct xenbus_driver xen_vsnd_driver = {
+	.ids = xen_drv_vsnd_ids,
+	.probe = xen_drv_vsnd_probe,
+	.remove = xen_drv_vsnd_remove,
+	.resume = xen_drv_vsnd_resume,
+	.otherend_changed = xen_drv_vsnd_backend_changed,
 };
 
-static int __init xen_drv_vaudio_init(void)
+static int __init xen_drv_vsnd_init(void)
 {
 	if (!xen_domain())
 		return -ENODEV;
 	if (xen_initial_domain()) {
-		LOG0(VAUDIO_DRIVER_NAME " cannot run in Dom0");
+		LOG0(VSND_DRIVER_NAME " cannot run in Dom0");
 		return -ENODEV;
 	}
 	if (!xen_has_pv_devices())
 		return -ENODEV;
-	LOG0("Registering XEN PV " VAUDIO_DRIVER_NAME);
-	return xenbus_register_frontend(&xen_vaudio_driver);
+	LOG0("Registering XEN PV " VSND_DRIVER_NAME);
+	return xenbus_register_frontend(&xen_vsnd_driver);
 }
 
-static void __exit xen_drv_vaudio_cleanup(void)
+static void __exit xen_drv_vsnd_cleanup(void)
 {
-	LOG0("Unregistering XEN PV " VAUDIO_DRIVER_NAME);
-	xenbus_unregister_driver(&xen_vaudio_driver);
+	LOG0("Unregistering XEN PV " VSND_DRIVER_NAME);
+	xenbus_unregister_driver(&xen_vsnd_driver);
 }
 
-module_init(xen_drv_vaudio_init);
-module_exit(xen_drv_vaudio_cleanup);
+module_init(xen_drv_vsnd_init);
+module_exit(xen_drv_vsnd_cleanup);
 
-MODULE_DESCRIPTION("Xen virtual audio device frontend");
+MODULE_DESCRIPTION("Xen virtual sound device frontend");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("xen:"VAUDIO_DRIVER_NAME);
+MODULE_ALIAS("xen:"VSND_DRIVER_NAME);
 MODULE_SUPPORTED_DEVICE("{{ALSA,Virtual soundcard}}");
 

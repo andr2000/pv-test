@@ -1,4 +1,4 @@
-struct vaudioif_card_pcm_hw_config DBG_CARD_PCM_HW_CONFIG = {
+struct vsndif_card_pcm_hw_config DBG_CARD_PCM_HW_CONFIG = {
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	.buffer_bytes_max = ((65536-64)*8),
 	.period_bytes_max = (65536-64),
@@ -11,14 +11,14 @@ struct vaudioif_card_pcm_hw_config DBG_CARD_PCM_HW_CONFIG = {
 	.rate_max = 192000,
 };
 
-static struct vaudioif_card_config DBG_CARD_CONFIG = {
-	.shortname = "XXX vaudio short name",
-	.longname = "XXX vaudio long name",
+static struct vsndif_card_config DBG_CARD_CONFIG = {
+	.shortname = "XXX vsnd short name",
+	.longname = "XXX vsnd long name",
 };
 
 #define DBG_MAX_PCM_INSTANCE	8
 
-static struct vaudioif_pcm_instance_config DBG_PCM_INSTANCES[][DBG_MAX_PCM_INSTANCE] = {
+static struct vsndif_pcm_instance_config DBG_PCM_INSTANCES[][DBG_MAX_PCM_INSTANCE] = {
 		{
 			{
 				.name = "General Analog",
@@ -49,14 +49,14 @@ static struct vaudioif_pcm_instance_config DBG_PCM_INSTANCES[][DBG_MAX_PCM_INSTA
 		},
 };
 
-static int snd_drv_vaudio_init(struct xen_drv_vaudio_info *info);
+static int snd_drv_vsnd_init(struct xen_drv_vsnd_info *info);
 
-int DBG_vaudio_run(struct xenbus_device *xen_bus_dev,
-		struct xen_drv_vaudio_info *info)
+int DBG_vsnd_run(struct xenbus_device *xen_bus_dev,
+		struct xen_drv_vsnd_info *info)
 {
 	int i, j, num_cards, num_pcm_instances;
 	int ret;
-	struct vaudioif_card_config *cur_card_ptr;
+	struct vsndif_card_config *cur_card_ptr;
 	LOG0("HACK! -------------------------------------------------- start");
 	/* FIXME: for debug fill in card's number and configuration
 	 * this must be done via negotiation with the backend in reality
@@ -73,8 +73,8 @@ int DBG_vaudio_run(struct xenbus_device *xen_bus_dev,
 	LOG0("Found configuration for %d cards and %d PCM instances",
 			num_cards, num_pcm_instances);
 	info->cfg_cards = devm_kzalloc(&xen_bus_dev->dev,
-			num_cards * sizeof(struct vaudioif_card_config) +
-			num_pcm_instances * sizeof(struct vaudioif_pcm_instance_config),
+			num_cards * sizeof(struct vsndif_card_config) +
+			num_pcm_instances * sizeof(struct vsndif_pcm_instance_config),
 			GFP_KERNEL);
 	if (!info->cfg_cards) {
 		ret = -ENOMEM;
@@ -90,18 +90,18 @@ int DBG_vaudio_run(struct xenbus_device *xen_bus_dev,
 		LOG0("Add configuration for card %d and %d instances", j, i);
 		/* copy card configuration */
 		memcpy(cur_card_ptr, &DBG_CARD_CONFIG,
-				sizeof(struct vaudioif_card_config));
+				sizeof(struct vsndif_card_config));
 		memcpy(cur_card_ptr->pcm_instance, DBG_PCM_INSTANCES[j],
-				i * sizeof(struct vaudioif_pcm_instance_config));
+				i * sizeof(struct vsndif_pcm_instance_config));
 		cur_card_ptr->num_pcm_instances = i;
-		cur_card_ptr = (struct vaudioif_card_config *)(
+		cur_card_ptr = (struct vsndif_card_config *)(
 				(char *)cur_card_ptr +
-				sizeof(struct vaudioif_card_config) +
-				i * sizeof(struct vaudioif_pcm_instance_config));
+				sizeof(struct vsndif_card_config) +
+				i * sizeof(struct vsndif_pcm_instance_config));
 		j++;
 	}
 
-	ret = snd_drv_vaudio_init(info);
+	ret = snd_drv_vsnd_init(info);
 	if (ret < 0)
 		goto fail;
 	LOG0("HACK! -------------------------------------------------- stop");
