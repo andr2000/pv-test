@@ -100,10 +100,6 @@ int DBG_vsnd_run(struct xenbus_device *xen_bus_dev,
 				i * sizeof(struct vsndif_pcm_instance_config));
 		j++;
 	}
-
-	ret = snd_drv_vsnd_init(info);
-	if (ret < 0)
-		goto fail;
 	LOG0("HACK! -------------------------------------------------- stop");
 	return 0;
 fail:

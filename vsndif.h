@@ -27,6 +27,7 @@
 #define VSNDIF_PROTO_VERSION 0x0001
 
 #define VSNDIF_PROTO_RING_NAME_CTRL "ctrl-ring-ref"
+#define VSNDIF_PROTO_CTRL_EVT_CHHNL "ctrl-event-channel"
 
 struct vsndif_pcm_instance_config {
 	char name[80];
@@ -74,6 +75,7 @@ struct vsndif_card_config {
 
 /* Operation completed successfully. */
 #define VSNDIF_OP_STATUS_OK	0
+#define VSNDIF_OP_STATUS_IO	1
 
 /* TODO: put description */
 #define VSNDIF_OP_READ_CONFIG	0
