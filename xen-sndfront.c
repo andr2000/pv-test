@@ -549,6 +549,12 @@ static int xen_drv_vsnd_probe(struct xenbus_device *xen_bus_dev,
 		ret = -ENOMEM;
 		goto fail;
 	}
+
+	/* FIXME: this is for insmod after rmmod
+	 * after removing the driver it remains in XenbusStateClosed state
+	 * but I would expect XenbusStateInitialising or XenbusStateUnknown */
+	xenbus_switch_state(xen_bus_dev, XenbusStateInitialising);
+
 	drv_info->xen_bus_dev = xen_bus_dev;
 	mutex_init(&drv_info->mutex);
 	drv_info->snd_drv_registered = false;
