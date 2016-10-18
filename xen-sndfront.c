@@ -475,15 +475,11 @@ static int snd_drv_vsnd_init(struct xen_drv_vsnd_info *drv_info)
 	if (ret < 0)
 		return ret;
 
-	LOG0("platform_driver_register ok");
-	/* XXX: test code - start */
-	num_cards = 2;
-	/* XXX: test code - stop */
+	num_cards = drv_info->cfg_num_cards;
 	drv_info->snd_drv_dev = devm_kzalloc(&drv_info->xen_bus_dev->dev,
 			sizeof(drv_info->snd_drv_dev[0]) * num_cards, GFP_KERNEL);
 	if (!drv_info->snd_drv_dev)
 		goto fail;
-	drv_info->cfg_num_cards = num_cards;
 	cur_card_config = (char *)drv_info->cfg_cards;
 	for (i = 0; i < num_cards; i++) {
 		struct platform_device *snd_drv_dev;
