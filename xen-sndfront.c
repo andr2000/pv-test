@@ -40,7 +40,7 @@
 #include <xen/grant_table.h>
 #include <xen/interface/io/ring.h>
 
-#include "vsndif.h"
+#include "xen-sndif/xen/include/public/io/sndif_linux.h"
 
 #define VSND_DRIVER_NAME	"vsnd"
 
@@ -71,7 +71,7 @@ enum vsndif_state {
 struct xen_drv_vsnd_info;
 
 struct xen_vsndif_ctrl_channel {
-	struct xen_vsndif_ctrl_front_ring ring;
+	struct xen_sndif_front_ring ring;
 	int ring_ref;
 	unsigned int evt_channel;
 	unsigned int irq;
@@ -131,10 +131,27 @@ struct snd_dev_pcm_stream_info {
 	int dummy;
 };
 
-/* XXX: remove me */
-#include "dbg_xen_sndfront.c"
-/* XXX: remove me */
+struct vsndif_pcm_instance_config {
+	char name[80];
+	/* device number */
+	int device;
+	int  num_streams_pb;
+	int  num_streams_cap;
+};
 
+struct vsndif_card_config {
+	/* card configuration */
+	char shortname[32];
+	char longname[80];
+	/* number of PCM instances in this configuration */
+	int num_pcm_instances;
+	/* PCM hardware descriptor */
+	struct snd_pcm_hardware pcm_hw;
+
+	/* pcm instance configurations - must be the last field in the structure
+	 * configuration data will be appended here: pcm_instance[num_streams] */
+	struct vsndif_pcm_instance_config pcm_instance[0];
+};
 
 /*
  * Sound driver start
@@ -348,7 +365,7 @@ static int snd_drv_vsnd_probe(struct platform_device *pdev)
 	struct snd_dev_card_info *card_info;
 	struct snd_dev_card_platdata *platdata;
 	struct snd_card *card;
-	struct vsndif_card_pcm_hw_config *card_pcm_hw;
+	struct snd_pcm_hardware *card_pcm_hw;
 	char card_id[sizeof(card->id)];
 	int ret, i;
 
@@ -382,7 +399,7 @@ static int snd_drv_vsnd_probe(struct platform_device *pdev)
 			goto fail;
 	}
 	card_info->pcm_hw = snd_drv_pcm_hardware;
-	card_pcm_hw = &platdata->card_config->card_pcm_hw;
+	card_pcm_hw = &platdata->card_config->pcm_hw;
 	if (card_pcm_hw->formats)
 		card_info->pcm_hw.formats = card_pcm_hw->formats;
 	if (card_pcm_hw->buffer_bytes_max)
@@ -664,7 +681,7 @@ static void xen_drv_vsnd_ctrl_ring_free(struct xen_drv_vsnd_info *drv_info)
 	channel = &drv_info->ctrl_channel;
 	channel->state = VSNDIF_STATE_DISCONNECTED;
 	/* release all who still waits for response if any */
-	channel->resp_status = -VSNDIF_OP_STATUS_IO;
+	channel->resp_status = -XENSND_RSP_ERROR;
 	complete_all(&channel->completion);
 	if (channel->irq)
 		unbind_from_irqhandler(channel->irq, drv_info);
@@ -683,7 +700,7 @@ static irqreturn_t xen_drv_vsnd_ctrl_interrupt(int irq, void *dev_id)
 {
 	struct xen_drv_vsnd_info *drv_info = dev_id;
 	struct xen_vsndif_ctrl_channel *channel;
-	struct xen_vsndif_ctrl_response *resp;
+	struct xensnd_resp *resp;
 	RING_IDX i, rp;
 	unsigned long flags;
 
@@ -697,11 +714,11 @@ static irqreturn_t xen_drv_vsnd_ctrl_interrupt(int irq, void *dev_id)
 	rmb(); /* Ensure we see queued responses up to 'rp'. */
 
 	for (i = channel->ring.rsp_cons; i != rp; i++) {
-		resp = RING_GET_RESPONSE(&channel->ring, i);
-		switch (resp->operation) {
-		case VSNDIF_OP_READ_CONFIG:
-			LOG0("Got response on VSNDIF_OP_READ_CONFIG");
-			channel->resp_status = resp->status;
+		resp = (struct xensnd_resp *)RING_GET_RESPONSE(&channel->ring, i);
+		switch (resp->u.data.operation) {
+		case XENSND_OP_OPEN:
+			LOG0("Got response on XENSND_OP_OPEN");
+			channel->resp_status = resp->u.data.status;
 			complete(&channel->completion);
 			break;
 		default:
@@ -728,7 +745,7 @@ static int xen_drv_vsnd_ctrl_ring_alloc(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev;
 	struct xen_vsndif_ctrl_channel *channel;
-	struct xen_vsndif_ctrl_sring *sring;
+	struct xen_sndif_sring *sring;
 	grant_ref_t gref;
 	int ret;
 
@@ -741,7 +758,7 @@ static int xen_drv_vsnd_ctrl_ring_alloc(struct xen_drv_vsnd_info *drv_info)
 	channel->ring.sring = NULL;
 	channel->evt_channel = -1;
 	channel->irq = -1;
-	sring = (struct xen_vsndif_ctrl_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
+	sring = (struct xen_sndif_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
 	if (!sring) {
 		ret = -ENOMEM;
 		xenbus_dev_fatal(xen_bus_dev, ret, "allocating ring page");
@@ -784,10 +801,10 @@ static inline void xen_drv_vsnd_ctrl_ring_flush(
 		notify_remote_via_irq(channel->irq);
 }
 
-static int xen_drv_be_get_sound_config(struct xen_drv_vsnd_info *drv_info)
+static int xen_drv_be_test_open(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xen_vsndif_ctrl_channel *channel;
-	struct xen_vsndif_ctrl_request *req;
+	struct xensnd_req *req;
 	unsigned long flags;
 
 	channel = &drv_info->ctrl_channel;
@@ -800,8 +817,9 @@ static int xen_drv_be_get_sound_config(struct xen_drv_vsnd_info *drv_info)
 	}
 	reinit_completion(&channel->completion);
 
-	req = RING_GET_REQUEST(&channel->ring, channel->ring.req_prod_pvt);
-	req->operation = VSNDIF_OP_READ_CONFIG;
+	req = (struct xensnd_req *)RING_GET_REQUEST(&channel->ring,
+			channel->ring.req_prod_pvt);
+	req->u.data.operation = XENSND_OP_OPEN;
 
 	channel->ring.req_prod_pvt++;
 	xen_drv_vsnd_ctrl_ring_flush(channel);
@@ -809,10 +827,6 @@ static int xen_drv_be_get_sound_config(struct xen_drv_vsnd_info *drv_info)
 
 	if (wait_for_completion_interruptible_timeout(&channel->completion,
 			msecs_to_jiffies(VSND_WAIT_BACK_MS)) <= 0) {
-		/* TODO: remove me */
-		DBG_vsnd_run(drv_info->xen_bus_dev, drv_info);
-		return 0;
-		/* TODO: remove me */
 		return -ETIMEDOUT;
 	}
 	if (channel->resp_status < 0)
@@ -844,18 +858,18 @@ again:
 
 	/* Write control channel ring reference */
 	err = xenbus_printf(xbt, xen_bus_dev->nodename,
-			VSNDIF_PROTO_RING_NAME_CTRL, "%u",
+			XENSND_FIELD_RING_REF, "%u",
 			drv_info->ctrl_channel.ring_ref);
 	if (err) {
-		message = "writing " VSNDIF_PROTO_RING_NAME_CTRL;
+		message = "writing " XENSND_FIELD_RING_REF;
 		goto abort_transaction;
 	}
 
 	err = xenbus_printf(xbt, xen_bus_dev->nodename,
-			VSNDIF_PROTO_CTRL_EVT_CHHNL, "%u",
+			XENSND_FIELD_EVT_CHNL, "%u",
 			drv_info->ctrl_channel.evt_channel);
 	if (err) {
-		message = "writing " VSNDIF_PROTO_CTRL_EVT_CHHNL;
+		message = "writing " XENSND_FIELD_EVT_CHNL;
 		goto abort_transaction;
 	}
 
@@ -867,7 +881,7 @@ again:
 		goto destroy_ring;
 	}
 	LOG0("Allocated and opened control ring channel: "
-			VSNDIF_PROTO_RING_NAME_CTRL " ->%u",
+			XENSND_FIELD_RING_REF " ->%u",
 			drv_info->ctrl_channel.ring_ref);
 	return 0;
 
@@ -903,7 +917,7 @@ static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
 	channel->state = VSNDIF_STATE_CONNECTED;
 	spin_unlock_irqrestore(&channel->io_lock, flags);
 	LOG0("Requesting sound configuration");
-	ret = xen_drv_be_get_sound_config(drv_info);
+	ret = xen_drv_be_test_open(drv_info);
 	if (ret < 0) {
 		LOG0("Failed to get sound configuration with err %d", ret);
 		return ret;

@@ -1,0 +1,3 @@
+[submodule "xen-sndif"]
+	path = xen-sndif
+	url = git@github.com:andr2000/xen-sndif.git
