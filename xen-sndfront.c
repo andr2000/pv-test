@@ -1321,6 +1321,7 @@ fail:
 static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev = drv_info->xen_bus_dev;
+	struct xenbus_transaction xbt;
 	char **card_nodes;
 	int stream_idx;
 	int i, ret;
@@ -1345,6 +1346,11 @@ static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
 	/* stream index must be unique through all cards: pass it in to be
 	 * incremented when creating streams */
 	stream_idx = 0;
+	ret = xenbus_transaction_start(&xbt);
+	if (ret) {
+		xenbus_dev_fatal(xen_bus_dev, ret, "starting transaction");
+		goto fail;
+	}
 	for (i = 0; i < drv_info->cfg_num_cards; i++) {
 		/* read card configuration from the store and
 		 * set platform data structure */
@@ -1359,6 +1365,13 @@ static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
 	ret = xen_drv_create_stream_evtchannels(drv_info, stream_idx);
 	if (ret < 0)
 		goto fail;
+	ret = xenbus_transaction_end(xbt, 0);
+	if (ret) {
+		if (ret == -EAGAIN)
+			goto again;
+		xenbus_dev_fatal(xen_bus_dev, ret, "completing transaction");
+		goto fail;
+	}
 	return snd_drv_vsnd_init(drv_info);
 fail:
 	return ret;
