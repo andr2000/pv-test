@@ -42,8 +42,6 @@
 
 #include "xen-sndif/xen/include/public/io/sndif_linux.h"
 
-#define VSND_DRIVER_NAME	"vsnd"
-
 #define GRANT_INVALID_REF	0
 /* timeout in ms to wait for backend to respond */
 #define VSND_WAIT_BACK_MS	5000
@@ -53,7 +51,7 @@
 #else
 #define LOG(log_level, fmt, ...) \
 		do { \
-			printk(VSND_DRIVER_NAME #log_level " (%s:%d): " fmt "\n", \
+			printk(XENSND_DRIVER_NAME #log_level " (%s:%d): " fmt "\n", \
 					__FUNCTION__, __LINE__ , ## __VA_ARGS__); \
 		} while (0)
 #endif
@@ -92,20 +90,51 @@ struct xen_drv_vsnd_info {
 
 	struct xen_vsndif_ctrl_channel ctrl_channel;
 
-	/* XXX: this comes from back to end configuration negotiation */
 	/* number of virtual cards */
 	int cfg_num_cards;
+	struct snd_dev_card_platdata *cfg_plat_data;
+};
+
+struct snd_dev_pcm_stream_info {
+	int index;
+	struct snd_pcm_hardware pcm_hw;
+};
+
+struct vsndif_stream_config {
+	int index;
+	struct snd_pcm_hardware pcm_hw;
+};
+
+struct vsndif_pcm_instance_config {
+	char name[80];
+	/* device number */
+	int device;
+	/* Device's PCM hardware descriptor */
+	struct snd_pcm_hardware pcm_hw;
+	int  num_streams_pb;
+	struct vsndif_stream_config *streams_pb;
+	int  num_streams_cap;
+	struct vsndif_stream_config *streams_cap;
+};
+
+struct vsndif_card_config {
 	/* card configuration */
-	struct vsndif_card_config *cfg_cards;
+	char shortname[32];
+	char longname[80];
+	/* number of PCM instances in this configuration */
+	int num_devices;
+	/* Card's PCM hardware descriptor */
+	struct snd_pcm_hardware pcm_hw;
+
+	/* pcm instance configurations */
+	struct vsndif_pcm_instance_config *pcm_instances;
 };
 
 struct snd_dev_card_platdata {
-	struct xen_drv_vsnd_info *xen_drv_info;
 	int index;
-	struct vsndif_card_config *card_config;
+	struct xen_drv_vsnd_info *xen_drv_info;
+	struct vsndif_card_config card_config;
 };
-
-struct snd_dev_pcm_instance_info;
 
 struct snd_dev_card_info {
 	struct xen_drv_vsnd_info *xen_drv_info;
@@ -116,8 +145,6 @@ struct snd_dev_card_info {
 	struct snd_dev_pcm_instance_info *pcm_instance;
 };
 
-struct snd_dev_pcm_stream_info;
-
 struct snd_dev_pcm_instance_info {
 	struct snd_dev_card_info *card_info;
 	struct snd_pcm *pcm;
@@ -125,32 +152,6 @@ struct snd_dev_pcm_instance_info {
 	struct snd_dev_pcm_stream_info *streams_pb;
 	int num_pcm_streams_cap;
 	struct snd_dev_pcm_stream_info *streams_cap;
-};
-
-struct snd_dev_pcm_stream_info {
-	int dummy;
-};
-
-struct vsndif_pcm_instance_config {
-	char name[80];
-	/* device number */
-	int device;
-	int  num_streams_pb;
-	int  num_streams_cap;
-};
-
-struct vsndif_card_config {
-	/* card configuration */
-	char shortname[32];
-	char longname[80];
-	/* number of PCM instances in this configuration */
-	int num_pcm_instances;
-	/* PCM hardware descriptor */
-	struct snd_pcm_hardware pcm_hw;
-
-	/* pcm instance configurations - must be the last field in the structure
-	 * configuration data will be appended here: pcm_instance[num_streams] */
-	struct vsndif_pcm_instance_config pcm_instance[0];
 };
 
 /*
@@ -180,7 +181,7 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 			      SNDRV_PCM_INFO_PAUSE);
 	runtime->hw.info |= SNDRV_PCM_INFO_INTERLEAVED;
 
-	stream_info->dummy = substream->number;
+	LOG0("stream_idx == %d", stream_info->index);
 	return 0;
 }
 
@@ -372,9 +373,9 @@ static int snd_drv_vsnd_probe(struct platform_device *pdev)
 	platdata = dev_get_platdata(&pdev->dev);
 	LOG0("Creating virtual sound card %d", platdata->index);
 	LOG0("Will configure %d playback/capture streams",
-			platdata->card_config->num_pcm_instances);
+			platdata->card_config.num_devices);
 
-	snprintf(card_id, sizeof(card->id), VSND_DRIVER_NAME "%d",
+	snprintf(card_id, sizeof(card->id), XENSND_DRIVER_NAME "%d",
 			platdata->index);
 	ret = snd_card_new(&pdev->dev, platdata->index, card_id, THIS_MODULE,
 			sizeof(struct snd_dev_card_info), &card);
@@ -385,21 +386,21 @@ static int snd_drv_vsnd_probe(struct platform_device *pdev)
 	card_info->xen_drv_info = platdata->xen_drv_info;
 	card_info->card = card;
 	card_info->pcm_instance = devm_kzalloc(&pdev->dev,
-			platdata->card_config->num_pcm_instances *
+			platdata->card_config.num_devices *
 			sizeof(struct snd_dev_pcm_instance_info), GFP_KERNEL);
 	if (!card_info->pcm_instance)
 		goto fail;
-	card_info->num_pcm_instances = platdata->card_config->num_pcm_instances;
+	card_info->num_pcm_instances = platdata->card_config.num_devices;
 
-	for (i = 0; i < platdata->card_config->num_pcm_instances; i++) {
+	for (i = 0; i < platdata->card_config.num_devices; i++) {
 		ret = snd_drv_vsnd_new_pcm(card_info,
-				&platdata->card_config->pcm_instance[i],
+				&platdata->card_config.pcm_instances[i],
 				&card_info->pcm_instance[i]);
 		if (ret < 0)
 			goto fail;
 	}
 	card_info->pcm_hw = snd_drv_pcm_hardware;
-	card_pcm_hw = &platdata->card_config->pcm_hw;
+	card_pcm_hw = &platdata->card_config.pcm_hw;
 	if (card_pcm_hw->formats)
 		card_info->pcm_hw.formats = card_pcm_hw->formats;
 	if (card_pcm_hw->buffer_bytes_max)
@@ -433,10 +434,10 @@ static int snd_drv_vsnd_probe(struct platform_device *pdev)
 		dummy_proc_init(dummy);
 
 #endif
-	strncpy(card->driver, VSND_DRIVER_NAME, sizeof(card->driver));
-	strncpy(card->shortname, platdata->card_config->shortname,
+	strncpy(card->driver, XENSND_DRIVER_NAME, sizeof(card->driver));
+	strncpy(card->shortname, platdata->card_config.shortname,
 			sizeof(card->shortname));
-	strncpy(card->longname, platdata->card_config->longname,
+	strncpy(card->longname, platdata->card_config.longname,
 			sizeof(card->longname));
 	ret = snd_card_register(card);
 	if (ret == 0) {
@@ -462,7 +463,7 @@ static struct platform_driver snd_drv_vsnd_info = {
 	.probe		= snd_drv_vsnd_probe,
 	.remove		= snd_drv_vsnd_remove,
 	.driver		= {
-		.name	= VSND_DRIVER_NAME,
+		.name	= XENSND_DRIVER_NAME,
 	},
 };
 
@@ -491,7 +492,6 @@ static void snd_drv_vsnd_cleanup(struct xen_drv_vsnd_info *drv_info)
 
 static int snd_drv_vsnd_init(struct xen_drv_vsnd_info *drv_info)
 {
-	char *cur_card_config;
 	int i, num_cards, ret;
 
 	LOG0();
@@ -505,29 +505,21 @@ static int snd_drv_vsnd_init(struct xen_drv_vsnd_info *drv_info)
 			sizeof(drv_info->snd_drv_dev[0]) * num_cards, GFP_KERNEL);
 	if (!drv_info->snd_drv_dev)
 		goto fail;
-	cur_card_config = (char *)drv_info->cfg_cards;
 	for (i = 0; i < num_cards; i++) {
 		struct platform_device *snd_drv_dev;
-		struct snd_dev_card_platdata snd_dev_platdata;
+		struct snd_dev_card_platdata *snd_dev_platdata;
 
+		snd_dev_platdata = &drv_info->cfg_plat_data[i];
 		LOG0("Adding card %d", i);
 		/* pass card configuration via platform data */
-		memset(&snd_dev_platdata, 0, sizeof(snd_dev_platdata));
-		snd_dev_platdata.xen_drv_info = drv_info;
-		snd_dev_platdata.index = i;
-		snd_dev_platdata.card_config =
-				(struct vsndif_card_config *)cur_card_config;
-		snd_drv_dev = platform_device_register_data(NULL, VSND_DRIVER_NAME,
-				i, &snd_dev_platdata, sizeof(snd_dev_platdata));
+		snd_drv_dev = platform_device_register_data(NULL, XENSND_DRIVER_NAME,
+				snd_dev_platdata->index, snd_dev_platdata,
+				sizeof(*snd_dev_platdata));
 		drv_info->snd_drv_dev[i] = snd_drv_dev;
 		if (IS_ERR(snd_drv_dev)) {
 			drv_info->snd_drv_dev[i] = NULL;
 			goto fail;
 		}
-		/* advance pointer to the next card configuration */
-		cur_card_config += sizeof(struct vsndif_card_config) +
-				snd_dev_platdata.card_config->num_pcm_instances *
-				sizeof(struct vsndif_pcm_instance_config);
 	}
 	LOG0("Added %d cards", num_cards);
 	return 0;
@@ -546,13 +538,12 @@ fail:
  * Xen driver start
  */
 
-static int xen_drv_talk_to_soundback(struct xenbus_device *xen_bus_dev,
-				struct xen_drv_vsnd_info *drv_info);
+static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info);
 static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info);
 static void xen_drv_vsnd_on_backend_disconnected(struct xen_drv_vsnd_info *drv_info);
 
 static int xen_drv_vsnd_remove(struct xenbus_device *dev);
-static void xen_drv_vsnd_ctrl_ring_free(struct xen_drv_vsnd_info *drv_info);
+static void xen_drv_vsnd_ring_free(struct xen_drv_vsnd_info *drv_info);
 
 static int xen_drv_vsnd_probe(struct xenbus_device *xen_bus_dev,
 				const struct xenbus_device_id *id)
@@ -588,7 +579,7 @@ static void xen_drv_vsnd_remove_internal(struct xen_drv_vsnd_info *drv_info)
 	unsigned long flags;
 
 	spin_lock_irqsave(&drv_info->ctrl_channel.io_lock, flags);
-	xen_drv_vsnd_ctrl_ring_free(drv_info);
+	xen_drv_vsnd_ring_free(drv_info);
 	spin_unlock_irqrestore(&drv_info->ctrl_channel.io_lock, flags);
 
 	snd_drv_vsnd_cleanup(drv_info);
@@ -632,7 +623,7 @@ static void xen_drv_vsnd_backend_changed(struct xenbus_device *xen_bus_dev,
 		if (xen_bus_dev->state != XenbusStateInitialising)
 			break;
 		mutex_lock(&drv_info->mutex);
-		ret = xen_drv_talk_to_soundback(xen_bus_dev, drv_info);
+		ret = xen_drv_talk_to_soundback(drv_info);
 		mutex_unlock(&drv_info->mutex);
 		if (ret < 0)
 			break;
@@ -669,7 +660,7 @@ static void xen_drv_vsnd_backend_changed(struct xenbus_device *xen_bus_dev,
 	}
 }
 
-static void xen_drv_vsnd_ctrl_ring_free(struct xen_drv_vsnd_info *drv_info)
+static void xen_drv_vsnd_ring_free(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev;
 	struct xen_vsndif_ctrl_channel *channel;
@@ -696,7 +687,7 @@ static void xen_drv_vsnd_ctrl_ring_free(struct xen_drv_vsnd_info *drv_info)
 	channel->ring.sring = NULL;
 }
 
-static irqreturn_t xen_drv_vsnd_ctrl_interrupt(int irq, void *dev_id)
+static irqreturn_t xen_drv_vsnd_evtchnl_interrupt(int irq, void *dev_id)
 {
 	struct xen_drv_vsnd_info *drv_info = dev_id;
 	struct xen_vsndif_ctrl_channel *channel;
@@ -741,7 +732,7 @@ out:
 	return IRQ_HANDLED;
 }
 
-static int xen_drv_vsnd_ctrl_ring_alloc(struct xen_drv_vsnd_info *drv_info)
+static int xen_drv_vsnd_ring_alloc(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev;
 	struct xen_vsndif_ctrl_channel *channel;
@@ -777,7 +768,7 @@ static int xen_drv_vsnd_ctrl_ring_alloc(struct xen_drv_vsnd_info *drv_info)
 		goto fail;
 
 	ret = bind_evtchn_to_irqhandler(channel->evt_channel,
-			xen_drv_vsnd_ctrl_interrupt,
+			xen_drv_vsnd_evtchnl_interrupt,
 			0, xen_bus_dev->devicetype, drv_info);
 
 	if (ret < 0)
@@ -790,7 +781,66 @@ fail:
 	return ret;
 }
 
-static inline void xen_drv_vsnd_ctrl_ring_flush(
+static int xen_drv_vsnd_ring_create(struct xenbus_device *xen_bus_dev,
+		struct xen_drv_vsnd_info *drv_info)
+{
+	struct xenbus_transaction xbt;
+	const char *message;
+	unsigned long flags;
+	int ret;
+
+	LOG0("Allocating and opening control ring channel");
+	/* allocate and open control channel */
+	ret = xen_drv_vsnd_ring_alloc(drv_info);
+	if (ret)
+		goto destroy_ring;;
+again:
+	ret = xenbus_transaction_start(&xbt);
+	if (ret) {
+		xenbus_dev_fatal(xen_bus_dev, ret, "starting transaction");
+		goto destroy_ring;
+	}
+
+	/* Write control channel ring reference */
+	ret = xenbus_printf(xbt, xen_bus_dev->nodename,
+			XENSND_FIELD_RING_REF, "%u",
+			drv_info->ctrl_channel.ring_ref);
+	if (ret) {
+		message = "writing " XENSND_FIELD_RING_REF;
+		goto abort_transaction;
+	}
+
+	ret = xenbus_printf(xbt, xen_bus_dev->nodename,
+			XENSND_FIELD_EVT_CHNL, "%u",
+			drv_info->ctrl_channel.evt_channel);
+	if (ret) {
+		message = "writing " XENSND_FIELD_EVT_CHNL;
+		goto abort_transaction;
+	}
+
+	ret = xenbus_transaction_end(xbt, 0);
+	if (ret) {
+		if (ret == -EAGAIN)
+			goto again;
+		xenbus_dev_fatal(xen_bus_dev, ret, "completing transaction");
+		goto destroy_ring;
+	}
+	LOG0("Allocated and opened control ring channel: "
+			XENSND_FIELD_RING_REF " ->%u",
+			drv_info->ctrl_channel.ring_ref);
+	return 0;
+
+abort_transaction:
+	xenbus_dev_fatal(xen_bus_dev, ret, "%s", message);
+	xenbus_transaction_end(xbt, 1);
+destroy_ring:
+	spin_lock_irqsave(&drv_info->ctrl_channel.io_lock, flags);
+	xen_drv_vsnd_ring_free(drv_info);
+	spin_unlock_irqrestore(&drv_info->ctrl_channel.io_lock, flags);
+	return ret;
+}
+
+static inline void xen_drv_vsnd_ring_flush(
 		struct xen_vsndif_ctrl_channel *channel)
 {
 	int notify;
@@ -822,7 +872,7 @@ static int xen_drv_be_test_open(struct xen_drv_vsnd_info *drv_info)
 	req->u.data.operation = XENSND_OP_OPEN;
 
 	channel->ring.req_prod_pvt++;
-	xen_drv_vsnd_ctrl_ring_flush(channel);
+	xen_drv_vsnd_ring_flush(channel);
 	spin_unlock_irqrestore(&channel->io_lock, flags);
 
 	if (wait_for_completion_interruptible_timeout(&channel->completion,
@@ -835,64 +885,462 @@ static int xen_drv_be_test_open(struct xen_drv_vsnd_info *drv_info)
 	return 0;
 }
 
-/* Common code used when first setting up, and when resuming. */
-static int xen_drv_talk_to_soundback(struct xenbus_device *xen_bus_dev,
-				struct xen_drv_vsnd_info *drv_info)
+/* get number of nodes under the path to get number of
+ * cards configured or number of devices within the card
+ */
+static char **xen_drv_get_num_nodes(const char *path, const char *node,
+		int *num_entries)
 {
-	struct xenbus_transaction xbt;
-	const char *message;
-	unsigned long flags;
-	int err;
+	char **result;
 
-	LOG0("Allocating and opening control ring channel");
-	/* allocate and open control channel */
-	err = xen_drv_vsnd_ctrl_ring_alloc(drv_info);
-	if (err)
-		goto destroy_ring;;
-again:
-	err = xenbus_transaction_start(&xbt);
-	if (err) {
-		xenbus_dev_fatal(xen_bus_dev, err, "starting transaction");
-		goto destroy_ring;
+	result = xenbus_directory(XBT_NIL, path, node, num_entries);
+	if (IS_ERR(result)) {
+		*num_entries = 0;
+		return NULL;
 	}
+	return result;
+}
 
-	/* Write control channel ring reference */
-	err = xenbus_printf(xbt, xen_bus_dev->nodename,
-			XENSND_FIELD_RING_REF, "%u",
-			drv_info->ctrl_channel.ring_ref);
-	if (err) {
-		message = "writing " XENSND_FIELD_RING_REF;
-		goto abort_transaction;
+struct PCM_HW_SAMPLE_RATE {
+	const char *name;
+	unsigned int mask;
+};
+static struct PCM_HW_SAMPLE_RATE xen_drv_pcm_hw_supported_rates[] = {
+	{ .name = "5512",   .mask = SNDRV_PCM_RATE_5512 },
+	{ .name = "8000",   .mask = SNDRV_PCM_RATE_8000 },
+	{ .name = "11025",  .mask = SNDRV_PCM_RATE_11025 },
+	{ .name = "16000",  .mask = SNDRV_PCM_RATE_16000 },
+	{ .name = "22050",  .mask = SNDRV_PCM_RATE_22050 },
+	{ .name = "32000",  .mask = SNDRV_PCM_RATE_32000 },
+	{ .name = "44100",  .mask = SNDRV_PCM_RATE_44100 },
+	{ .name = "48000",  .mask = SNDRV_PCM_RATE_48000 },
+	{ .name = "64000",  .mask = SNDRV_PCM_RATE_64000 },
+	{ .name = "96000",  .mask = SNDRV_PCM_RATE_96000 },
+	{ .name = "176400", .mask = SNDRV_PCM_RATE_176400 },
+	{ .name = "192000", .mask = SNDRV_PCM_RATE_192000 },
+};
+
+static void xen_drv_pcm_hw_parse_rates(char *list, unsigned int len,
+		const char *path, struct snd_pcm_hardware *pcm_hw)
+{
+	char *cur_rate;
+	unsigned int cur_mask;
+	unsigned int rates;
+	unsigned int rate_min;
+	unsigned int rate_max;
+	int i;
+
+	cur_rate = NULL;
+	rates = 0;
+	rate_min = -1;
+	rate_max = 0;
+	while ((cur_rate = strsep(&list, XENSND_LIST_SEPARATOR))) {
+		for (i = 0; i < ARRAY_SIZE(xen_drv_pcm_hw_supported_rates); i++)
+			if (!strncasecmp(cur_rate, xen_drv_pcm_hw_supported_rates[i].name,
+					XENSND_SAMPLE_RATE_MAX_LEN)) {
+				cur_mask =xen_drv_pcm_hw_supported_rates[i].mask;
+				rates |= cur_mask;
+				if (rate_min > cur_mask)
+					rate_min = cur_mask;
+				if (rate_max < cur_mask)
+					rate_max = cur_mask;
+				LOG0("Found rate: %s", cur_rate);
+			}
 	}
-
-	err = xenbus_printf(xbt, xen_bus_dev->nodename,
-			XENSND_FIELD_EVT_CHNL, "%u",
-			drv_info->ctrl_channel.evt_channel);
-	if (err) {
-		message = "writing " XENSND_FIELD_EVT_CHNL;
-		goto abort_transaction;
+	if (rates) {
+		pcm_hw->rates = rates;
+		pcm_hw->rate_min = rate_min;
+		pcm_hw->rate_max = rate_max;
 	}
+}
 
-	err = xenbus_transaction_end(xbt, 0);
-	if (err) {
-		if (err == -EAGAIN)
-			goto again;
-		xenbus_dev_fatal(xen_bus_dev, err, "completing transaction");
-		goto destroy_ring;
+struct PCM_HW_SAMPLE_FORMAT {
+	const char * name;
+	u64 mask;
+};
+static struct PCM_HW_SAMPLE_FORMAT xen_drv_pcm_hw_supported_formats[] = {
+	{ .name = XENSND_SAMPLE_FMT_U8,                 .mask = SNDRV_PCM_FMTBIT_U8 },
+	{ .name = XENSND_SAMPLE_FMT_S8,                 .mask = SNDRV_PCM_FMTBIT_S8 },
+	{ .name = XENSND_SAMPLE_FMT_U16_LE,             .mask = SNDRV_PCM_FMTBIT_U16_LE },
+	{ .name = XENSND_SAMPLE_FMT_U16_BE,             .mask = SNDRV_PCM_FMTBIT_U16_BE },
+	{ .name = XENSND_SAMPLE_FMT_S16_LE,             .mask = SNDRV_PCM_FMTBIT_S16_LE },
+	{ .name = XENSND_SAMPLE_FMT_S16_BE,             .mask = SNDRV_PCM_FMTBIT_S16_BE },
+	{ .name = XENSND_SAMPLE_FMT_U24_LE,             .mask = SNDRV_PCM_FMTBIT_U24_LE },
+	{ .name = XENSND_SAMPLE_FMT_U24_BE,             .mask = SNDRV_PCM_FMTBIT_U24_BE },
+	{ .name = XENSND_SAMPLE_FMT_S24_LE,             .mask = SNDRV_PCM_FMTBIT_S24_LE },
+	{ .name = XENSND_SAMPLE_FMT_S24_BE,             .mask = SNDRV_PCM_FMTBIT_S24_BE },
+	{ .name = XENSND_SAMPLE_FMT_U32_LE,             .mask = SNDRV_PCM_FMTBIT_U32_LE },
+	{ .name = XENSND_SAMPLE_FMT_U32_BE,             .mask = SNDRV_PCM_FMTBIT_U32_BE },
+	{ .name = XENSND_SAMPLE_FMT_S32_LE,             .mask = SNDRV_PCM_FMTBIT_S32_LE },
+	{ .name = XENSND_SAMPLE_FMT_S32_BE,             .mask = SNDRV_PCM_FMTBIT_S32_BE },
+	{ .name = XENSND_SAMPLE_FMT_A_LAW,              .mask = SNDRV_PCM_FMTBIT_A_LAW },
+	{ .name = XENSND_SAMPLE_FMT_MU_LAW,             .mask = SNDRV_PCM_FMTBIT_MU_LAW },
+	{ .name = XENSND_SAMPLE_FMT_FLOAT_LE,           .mask = SNDRV_PCM_FMTBIT_FLOAT_LE },
+	{ .name = XENSND_SAMPLE_FMT_FLOAT_BE,           .mask = SNDRV_PCM_FMTBIT_FLOAT_BE },
+	{ .name = XENSND_SAMPLE_FMT_FLOAT64_LE,         .mask = SNDRV_PCM_FMTBIT_FLOAT64_LE },
+	{ .name = XENSND_SAMPLE_FMT_FLOAT64_BE,         .mask = SNDRV_PCM_FMTBIT_FLOAT64_BE },
+	{ .name = XENSND_SAMPLE_FMT_IEC958_SUBFRAME_LE, .mask = SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_LE },
+	{ .name = XENSND_SAMPLE_FMT_IEC958_SUBFRAME_BE, .mask = SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_BE },
+	{ .name = XENSND_SAMPLE_FMT_IMA_ADPCM,          .mask = SNDRV_PCM_FMTBIT_IMA_ADPCM },
+	{ .name = XENSND_SAMPLE_FMT_MPEG,               .mask = SNDRV_PCM_FMTBIT_MPEG },
+	{ .name = XENSND_SAMPLE_FMT_GSM,                .mask = SNDRV_PCM_FMTBIT_GSM },
+};
+
+static void xen_drv_pcm_hw_parse_formats(char *list, unsigned int len,
+		const char *path, struct snd_pcm_hardware *pcm_hw)
+{
+	u64 formats;
+	char *cur_format;
+	int i;
+
+	cur_format = NULL;
+	formats = 0;
+	while ((cur_format = strsep(&list, XENSND_LIST_SEPARATOR))) {
+		for (i = 0; i < ARRAY_SIZE(xen_drv_pcm_hw_supported_formats); i++)
+			if (!strncasecmp(cur_format,
+				xen_drv_pcm_hw_supported_formats[i].name,
+				XENSND_SAMPLE_FORMAT_MAX_LEN)) {
+					formats |= xen_drv_pcm_hw_supported_formats[i].mask;
+					LOG0("Found format: %s", cur_format);
+			}
 	}
-	LOG0("Allocated and opened control ring channel: "
-			XENSND_FIELD_RING_REF " ->%u",
-			drv_info->ctrl_channel.ring_ref);
-	return 0;
+	if (formats)
+		pcm_hw->formats = formats;
+}
 
-abort_transaction:
-	xenbus_dev_fatal(xen_bus_dev, err, "%s", message);
-	xenbus_transaction_end(xbt, 1);
-destroy_ring:
-	spin_lock_irqsave(&drv_info->ctrl_channel.io_lock, flags);
-	xen_drv_vsnd_ctrl_ring_free(drv_info);
-	spin_unlock_irqrestore(&drv_info->ctrl_channel.io_lock, flags);
-	return err;
+static void xen_drv_read_pcm_hw_config(const char *path,
+		struct snd_pcm_hardware *pcm_hw_base,
+		struct snd_pcm_hardware *pcm_hw)
+{
+	char *list;
+	int val;
+	unsigned int len;
+
+	*pcm_hw = *pcm_hw_base;
+	if (xenbus_scanf(XBT_NIL, path, XENSND_FIELD_CHANNELS_MIN,
+			"%d", &val) < 0)
+		val = 0;
+	if (val) {
+		pcm_hw->channels_min = val;
+		LOG0("pcm_hw->channels_min %d", val);
+	}
+	if (xenbus_scanf(XBT_NIL, path, XENSND_FIELD_CHANNELS_MAX,
+			"%d", &val) < 0)
+		val = 0;
+	if (val) {
+		pcm_hw->channels_max = val;
+		LOG0("pcm_hw->channels_max %d", val);
+	}
+	list = xenbus_read(XBT_NIL, path, XENSND_FIELD_SAMPLE_RATES, &len);
+	if (!IS_ERR(list)) {
+		xen_drv_pcm_hw_parse_rates(list, len, path, pcm_hw);
+		LOG0("Sample rates: \"%s\"", list);
+		kfree(list);
+	}
+	list = xenbus_read(XBT_NIL, path, XENSND_FIELD_SAMPLE_FORMATS, &len);
+	if (!IS_ERR(list)) {
+		xen_drv_pcm_hw_parse_formats(list, len, path, pcm_hw);
+		LOG0("Sample formats: \"%s\"", list);
+		kfree(list);
+	}
+}
+
+static void xen_drv_read_card_config_common(const char *path,
+		struct vsndif_card_config *card_config)
+{
+	char *str;
+
+	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_CARD_SHORT_NAME, NULL);
+	if (!IS_ERR(str)) {
+		strncpy(card_config->shortname, str,
+				sizeof(card_config->shortname));
+		kfree(str);
+	}
+	LOG0("Card short name is \"%s\"", card_config->shortname);
+	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_CARD_LONG_NAME, NULL);
+	if (!IS_ERR(str)) {
+		strncpy(card_config->longname, str,
+				sizeof(card_config->longname));
+		kfree(str);
+	}
+	LOG0("Card long name is \"%s\"", card_config->longname);
+	/* check if PCM HW configuration exists for this card and update if so */
+	xen_drv_read_pcm_hw_config(path, &snd_drv_pcm_hardware,
+			&card_config->pcm_hw);
+}
+
+static int xen_drv_read_card_config_get_stream_type(char *path, int index,
+		int *num_pb, int *num_cap)
+{
+	int ret;
+	char *str;
+
+	*num_pb = 0;
+	*num_cap = 0;
+	path = kasprintf(GFP_KERNEL, "%s/%s/%d", path, XENSND_PATH_STREAM, index);
+	if (!path) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_TYPE, NULL);
+	if (IS_ERR(str)) {
+		LOG0("Cannot find stream type at %s/%s", path, XENSND_FIELD_TYPE);
+		ret = -EINVAL;
+		goto fail;
+	}
+	if (!strncasecmp(str, XENSND_STREAM_TYPE_PLAYBACK,
+			sizeof(XENSND_STREAM_TYPE_PLAYBACK)))
+		(*num_pb)++;
+	else if (!strncasecmp(str, XENSND_STREAM_TYPE_CAPTURE,
+			sizeof(XENSND_STREAM_TYPE_CAPTURE)))
+		(*num_cap)++;
+	else {
+		ret = EINVAL;
+		goto fail;
+	}
+	ret = 0;
+fail:
+	if (path)
+		kfree(path);
+	if (str)
+		kfree(str);
+	return -ret;
+}
+
+static int xen_drv_read_card_config_stream(struct xen_drv_vsnd_info *drv_info,
+		struct vsndif_pcm_instance_config *pcm_instance,
+		struct snd_pcm_hardware *pcm_hw_base,
+		char *path, int index, int *cur_pb, int *cur_cap,
+		int *stream_idx)
+{
+	int ret;
+	char *str;
+	struct vsndif_stream_config *stream;
+
+	path = kasprintf(GFP_KERNEL, "%s/%s/%d", path, XENSND_PATH_STREAM, index);
+	if (!path) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_TYPE, NULL);
+	if (IS_ERR(str)) {
+		LOG0("Cannot find stream type at %s/%s", path, XENSND_FIELD_TYPE);
+		ret = -EINVAL;
+		goto fail;
+	}
+	if (!strncasecmp(str, XENSND_STREAM_TYPE_PLAYBACK,
+			sizeof(XENSND_STREAM_TYPE_PLAYBACK))) {
+		stream = &pcm_instance->streams_pb[(*cur_pb)++];
+	} else if (!strncasecmp(str, XENSND_STREAM_TYPE_CAPTURE,
+			sizeof(XENSND_STREAM_TYPE_CAPTURE))) {
+		stream = &pcm_instance->streams_cap[(*cur_cap)++];
+	}
+	else {
+		ret = -EINVAL;
+		goto fail;
+	}
+	/* assign and publish next unique stream index */
+	stream->index = (*stream_idx)++;
+	ret = xenbus_printf(XBT_NIL, path, XENSND_FIELD_STREAM_INDEX,
+			"%d", stream->index);
+	if (ret < 0)
+		goto fail;
+	xen_drv_read_pcm_hw_config(path, &pcm_instance->pcm_hw, &stream->pcm_hw);
+	LOG0("Stream %s type %s index %d", path, str, stream->index);
+	ret = 0;
+fail:
+	if (str)
+		kfree(str);
+	if (path)
+		kfree(path);
+	return -ret;
+}
+
+static int xen_drv_read_card_config_device(struct xen_drv_vsnd_info *drv_info,
+		struct vsndif_pcm_instance_config *pcm_instance,
+		struct snd_pcm_hardware *pcm_hw_base,
+		char *path, const char *device_node,
+		int *stream_idx)
+{
+	char **stream_nodes;
+	char *str;
+	int ret, i, num_streams;
+	int num_pb, num_cap;
+	int cur_pb, cur_cap;
+
+	path = kasprintf(GFP_KERNEL, "%s/%s", path, device_node);
+	if (!path) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_DEVICE_NAME, NULL);
+	if (!IS_ERR(str)) {
+		strncpy(pcm_instance->name, str,
+				sizeof(pcm_instance->name));
+		kfree(str);
+	}
+	if (!kstrtoint(device_node, 10, &pcm_instance->device)) {
+		LOG0("Device id %d", pcm_instance->device);
+	} else {
+		LOG0("Wrong device id at %s", path);
+		ret = -EINVAL;
+		goto fail;
+	}
+	/* check if PCM HW configuration exists for this device
+	 * and update if so */
+	xen_drv_read_pcm_hw_config(path, pcm_hw_base, &pcm_instance->pcm_hw);
+	/* read streams */
+	stream_nodes = xen_drv_get_num_nodes(path, XENSND_PATH_STREAM,
+			&num_streams);
+	if (stream_nodes)
+		kfree(stream_nodes);
+	LOG0("Reading %d stream(s)", num_streams);
+	pcm_instance->num_streams_pb = 0;
+	pcm_instance->num_streams_cap = 0;
+	/* get number of playback and capture streams */
+	for (i = 0; i < num_streams; i++) {
+		ret = xen_drv_read_card_config_get_stream_type(path, i,
+				&num_pb, &num_cap);
+		if (ret < 0)
+			goto fail;
+		pcm_instance->num_streams_pb += num_pb;
+		pcm_instance->num_streams_cap += num_cap;
+	}
+	if (pcm_instance->num_streams_pb) {
+		pcm_instance->streams_pb = devm_kzalloc(&drv_info->xen_bus_dev->dev,
+				pcm_instance->num_streams_pb *
+				sizeof(struct vsndif_stream_config),
+				GFP_KERNEL);
+		if (!pcm_instance->streams_pb) {
+			ret = -ENOMEM;
+			goto fail;
+		}
+	}
+	if (pcm_instance->num_streams_cap) {
+		pcm_instance->streams_cap = devm_kzalloc(&drv_info->xen_bus_dev->dev,
+				pcm_instance->num_streams_cap *
+				sizeof(struct vsndif_stream_config),
+				GFP_KERNEL);
+		if (!pcm_instance->streams_cap) {
+			ret = -ENOMEM;
+			goto fail;
+		}
+	}
+	cur_pb = 0;
+	cur_cap = 0;
+	for (i = 0; i < num_streams; i++) {
+		ret = xen_drv_read_card_config_stream(drv_info,
+				pcm_instance, &pcm_instance->pcm_hw,
+				path, i, &cur_pb, &cur_cap, stream_idx);
+		if (ret < 0)
+			goto fail;
+	}
+	ret = 0;
+fail:
+	if (path)
+		kfree(path);
+	return -ret;
+}
+
+static int xen_drv_read_card_config(struct xen_drv_vsnd_info *drv_info,
+		struct snd_dev_card_platdata *plat_data,
+		int *stream_idx)
+{
+	struct xenbus_device *xen_bus_dev = drv_info->xen_bus_dev;
+	char *path;
+	char **device_nodes = NULL;
+	int ret, num_devices, i;
+
+	path = kasprintf(GFP_KERNEL, "%s/" XENSND_PATH_CARD "/%d",
+			xen_bus_dev->nodename, plat_data->index);
+	if (!path) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	device_nodes = xen_drv_get_num_nodes(path, XENSND_PATH_DEVICE,
+			&num_devices);
+	if (!num_devices) {
+		LOG0("No devices configured for sound card %d at %s/%s",
+				plat_data->index, path, XENSND_PATH_DEVICE);
+		ret = -ENODEV;
+		goto fail;
+	}
+	xen_drv_read_card_config_common(path, &plat_data->card_config);
+	/* read configuration for devices of this card */
+	plat_data->card_config.pcm_instances = devm_kzalloc(
+			&drv_info->xen_bus_dev->dev,
+			num_devices * sizeof(struct vsndif_pcm_instance_config),
+			GFP_KERNEL);
+	if (!plat_data->card_config.pcm_instances) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	kfree(path);
+	path = kasprintf(GFP_KERNEL,
+			"%s/" XENSND_PATH_CARD "/%d/" XENSND_PATH_DEVICE,
+			xen_bus_dev->nodename, plat_data->index);
+	if (!path) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	for (i = 0; i < num_devices; i++) {
+		ret = xen_drv_read_card_config_device(drv_info,
+			&plat_data->card_config.pcm_instances[i],
+			&plat_data->card_config.pcm_hw,
+			path, device_nodes[i], stream_idx);
+		if (ret < 0)
+			goto fail;
+	}
+	plat_data->card_config.num_devices = num_devices;
+	ret = 0;
+fail:
+	if (device_nodes)
+		kfree(device_nodes);
+	if (path)
+		kfree(path);
+	return ret;
+}
+
+static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
+{
+	struct xenbus_device *xen_bus_dev = drv_info->xen_bus_dev;
+	char **card_nodes;
+	int stream_idx;
+	int i, ret;
+
+	LOG0("Reading number of cards to configure");
+	card_nodes = xen_drv_get_num_nodes(xen_bus_dev->nodename,
+			XENSND_PATH_CARD, &drv_info->cfg_num_cards);
+	if (card_nodes)
+		kfree(card_nodes);
+	if (!drv_info->cfg_num_cards) {
+		LOG0("No sound cards configured");
+		return 0;
+	}
+	LOG0("Configuring %d sound cards", drv_info->cfg_num_cards);
+	drv_info->cfg_plat_data = devm_kzalloc(&drv_info->xen_bus_dev->dev,
+			drv_info->cfg_num_cards *
+			sizeof(struct snd_dev_card_platdata), GFP_KERNEL);
+	if (!drv_info->cfg_plat_data) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	/* stream index must be unique through all cards: pass it in to be
+	 * incremented when creating streams */
+	stream_idx = 0;
+	for (i = 0; i < drv_info->cfg_num_cards; i++) {
+		/* read card configuration from the store and
+		 * set platform data structure */
+		drv_info->cfg_plat_data[i].index = i;
+		drv_info->cfg_plat_data[i].xen_drv_info = drv_info;
+		ret = xen_drv_read_card_config(drv_info,
+				&drv_info->cfg_plat_data[i], &stream_idx);
+		if (ret < 0)
+			goto fail;
+	}
+	return snd_drv_vsnd_init(drv_info);
+fail:
+	return ret;
 }
 
 static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
@@ -913,6 +1361,7 @@ static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
 	default:
 		return -ENOENT;
 	}
+#if 0
 	spin_lock_irqsave(&channel->io_lock, flags);
 	channel->state = VSNDIF_STATE_CONNECTED;
 	spin_unlock_irqrestore(&channel->io_lock, flags);
@@ -924,6 +1373,9 @@ static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
 	}
 	LOG0("Got sound configuration, initializing");
 	return snd_drv_vsnd_init(drv_info);
+#else
+	return 0;
+#endif
 }
 
 static void xen_drv_vsnd_on_backend_disconnected(struct xen_drv_vsnd_info *drv_info)
@@ -937,7 +1389,7 @@ static void xen_drv_vsnd_on_backend_disconnected(struct xen_drv_vsnd_info *drv_i
  */
 
 static const struct xenbus_device_id xen_drv_vsnd_ids[] = {
-	{ VSND_DRIVER_NAME },
+	{ XENSND_DRIVER_NAME },
 	{ "" }
 };
 
@@ -954,18 +1406,18 @@ static int __init xen_drv_vsnd_init(void)
 	if (!xen_domain())
 		return -ENODEV;
 	if (xen_initial_domain()) {
-		LOG0(VSND_DRIVER_NAME " cannot run in Dom0");
+		LOG0(XENSND_DRIVER_NAME " cannot run in Dom0");
 		return -ENODEV;
 	}
 	if (!xen_has_pv_devices())
 		return -ENODEV;
-	LOG0("Registering XEN PV " VSND_DRIVER_NAME);
+	LOG0("Registering XEN PV " XENSND_DRIVER_NAME);
 	return xenbus_register_frontend(&xen_vsnd_driver);
 }
 
 static void __exit xen_drv_vsnd_cleanup(void)
 {
-	LOG0("Unregistering XEN PV " VSND_DRIVER_NAME);
+	LOG0("Unregistering XEN PV " XENSND_DRIVER_NAME);
 	xenbus_unregister_driver(&xen_vsnd_driver);
 }
 
@@ -974,6 +1426,6 @@ module_exit(xen_drv_vsnd_cleanup);
 
 MODULE_DESCRIPTION("Xen virtual sound device frontend");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("xen:"VSND_DRIVER_NAME);
+MODULE_ALIAS("xen:"XENSND_DRIVER_NAME);
 MODULE_SUPPORTED_DEVICE("{{ALSA,Virtual soundcard}}");
 
