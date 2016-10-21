@@ -66,8 +66,6 @@ enum vsndif_state {
 	VSNDIF_STATE_SUSPENDED,
 };
 
-spinlock_t irq_lock;
-
 struct xen_drv_vsnd_info;
 
 struct xen_vsndif_event_channel {
@@ -85,6 +83,7 @@ struct xen_vsndif_event_channel {
 
 struct xen_drv_vsnd_info {
 	struct xenbus_device *xen_bus_dev;
+	spinlock_t io_lock;
 	struct mutex mutex;
 	bool snd_drv_registered;
 	/* array of virtual sound platform devices */
@@ -570,6 +569,7 @@ static int xen_drv_vsnd_probe(struct xenbus_device *xen_bus_dev,
 	xenbus_switch_state(xen_bus_dev, XenbusStateInitialising);
 
 	drv_info->xen_bus_dev = xen_bus_dev;
+	spin_lock_init(&drv_info->io_lock);
 	mutex_init(&drv_info->mutex);
 	drv_info->snd_drv_registered = false;
 	dev_set_drvdata(&xen_bus_dev->dev, drv_info);
@@ -581,11 +581,7 @@ fail:
 
 static void xen_drv_vsnd_remove_internal(struct xen_drv_vsnd_info *drv_info)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&irq_lock, flags);
 	xen_drv_vsnd_ring_free_all(drv_info);
-	spin_unlock_irqrestore(&irq_lock, flags);
 	snd_drv_vsnd_cleanup(drv_info);
 }
 
@@ -711,13 +707,8 @@ static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 	RING_IDX i, rp;
 	unsigned long flags;
 
-	spin_lock_irqsave(&irq_lock, flags);
-	/* check if event channel still exists: it may happen that
-	 * while entering the IRQ handler the event channel to be served
-	 * was deleted by rmmod or backend state change
-	 */
-	if (unlikely(!drv_info->evt_channel ||
-			channel->state != VSNDIF_STATE_CONNECTED))
+	spin_lock_irqsave(&drv_info->io_lock, flags);
+	if (unlikely(channel->state != VSNDIF_STATE_CONNECTED))
 		goto out;
 
  again:
@@ -748,7 +739,7 @@ static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 		channel->ring.sring->rsp_event = i + 1;
 
 out:
-	spin_unlock_irqrestore(&irq_lock, flags);
+	spin_unlock_irqrestore(&drv_info->io_lock, flags);
 	return IRQ_HANDLED;
 }
 
@@ -1272,7 +1263,6 @@ static int xen_drv_create_stream_evtchannels(struct xen_drv_vsnd_info *drv_info,
 		int num_streams)
 {
 	int ret, c, d, s, stream_idx;
-	unsigned long flags;
 
 	drv_info->evt_channel = devm_kzalloc(&drv_info->xen_bus_dev->dev,
 			num_streams *
@@ -1312,9 +1302,7 @@ static int xen_drv_create_stream_evtchannels(struct xen_drv_vsnd_info *drv_info,
 	drv_info->num_evt_channels = num_streams;
 	ret = 0;
 fail:
-	spin_lock_irqsave(&irq_lock, flags);
 	xen_drv_vsnd_ring_free_all(drv_info);
-	spin_unlock_irqrestore(&irq_lock, flags);
 	return ret;
 }
 
@@ -1403,7 +1391,6 @@ static int __init xen_drv_vsnd_init(void)
 	if (!xen_has_pv_devices())
 		return -ENODEV;
 	LOG0("Registering XEN PV " XENSND_DRIVER_NAME);
-	spin_lock_init(&irq_lock);
 	return xenbus_register_frontend(&xen_vsnd_driver);
 }
 
