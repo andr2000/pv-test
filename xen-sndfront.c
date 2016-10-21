@@ -68,10 +68,10 @@ enum vsndif_state {
 
 struct xen_drv_vsnd_info;
 
-struct xen_vsndif_ctrl_channel {
+struct xen_vsndif_event_channel {
 	struct xen_sndif_front_ring ring;
 	int ring_ref;
-	unsigned int evt_channel;
+	unsigned int port;
 	unsigned int irq;
 	spinlock_t io_lock;
 	struct completion completion;
@@ -88,7 +88,8 @@ struct xen_drv_vsnd_info {
 	/* array of virtual sound platform devices */
 	struct platform_device **snd_drv_dev;
 
-	struct xen_vsndif_ctrl_channel ctrl_channel;
+	int num_evt_channels;
+	struct xen_vsndif_event_channel *evt_channel;
 
 	/* number of virtual cards */
 	int cfg_num_cards;
@@ -98,10 +99,12 @@ struct xen_drv_vsnd_info {
 struct snd_dev_pcm_stream_info {
 	int index;
 	struct snd_pcm_hardware pcm_hw;
+	struct xen_vsndif_event_channel evt_channel;
 };
 
 struct vsndif_stream_config {
 	int index;
+	char *xenstore_path;
 	struct snd_pcm_hardware pcm_hw;
 };
 
@@ -543,7 +546,7 @@ static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
 static void xen_drv_vsnd_on_backend_disconnected(struct xen_drv_vsnd_info *drv_info);
 
 static int xen_drv_vsnd_remove(struct xenbus_device *dev);
-static void xen_drv_vsnd_ring_free(struct xen_drv_vsnd_info *drv_info);
+static void xen_drv_vsnd_stream_ring_free(struct xen_drv_vsnd_info *drv_info);
 
 static int xen_drv_vsnd_probe(struct xenbus_device *xen_bus_dev,
 				const struct xenbus_device_id *id)
@@ -566,7 +569,6 @@ static int xen_drv_vsnd_probe(struct xenbus_device *xen_bus_dev,
 	drv_info->xen_bus_dev = xen_bus_dev;
 	mutex_init(&drv_info->mutex);
 	drv_info->snd_drv_registered = false;
-	spin_lock_init(&drv_info->ctrl_channel.io_lock);
 	dev_set_drvdata(&xen_bus_dev->dev, drv_info);
 	return 0;
 fail:
@@ -578,10 +580,12 @@ static void xen_drv_vsnd_remove_internal(struct xen_drv_vsnd_info *drv_info)
 {
 	unsigned long flags;
 
+#if 0
+#warning FIXME
 	spin_lock_irqsave(&drv_info->ctrl_channel.io_lock, flags);
-	xen_drv_vsnd_ring_free(drv_info);
+	xen_drv_vsnd_stream_ring_free(drv_info);
 	spin_unlock_irqrestore(&drv_info->ctrl_channel.io_lock, flags);
-
+#endif
 	snd_drv_vsnd_cleanup(drv_info);
 }
 
@@ -660,12 +664,13 @@ static void xen_drv_vsnd_backend_changed(struct xenbus_device *xen_bus_dev,
 	}
 }
 
-static void xen_drv_vsnd_ring_free(struct xen_drv_vsnd_info *drv_info)
+static void xen_drv_vsnd_stream_ring_free(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev;
-	struct xen_vsndif_ctrl_channel *channel;
+	struct xen_vsndif_event_channel *channel;
 
-	LOG0("Cleaning up control ring");
+	LOG0("FIXME:FIXME:FIXME:FIXME:FIXME:FIXME:FIXME:Cleaning up control ring");
+#if 0
 	if (!drv_info->ctrl_channel.ring.sring)
 		return;
 	xen_bus_dev = drv_info->xen_bus_dev;
@@ -677,24 +682,27 @@ static void xen_drv_vsnd_ring_free(struct xen_drv_vsnd_info *drv_info)
 	if (channel->irq)
 		unbind_from_irqhandler(channel->irq, drv_info);
 	channel->irq = 0;
-	if (channel->evt_channel)
-		xenbus_free_evtchn(xen_bus_dev, channel->evt_channel);
-	channel->evt_channel = 0;
+	if (channel->port)
+		xenbus_free_evtchn(xen_bus_dev, channel->port);
+	channel->port = 0;
 	/* End access and free the pages */
 	if (channel->ring_ref != GRANT_INVALID_REF)
 		gnttab_end_foreign_access(channel->ring_ref, 0,
 				(unsigned long)channel->ring.sring);
 	channel->ring.sring = NULL;
+#endif
 }
 
-static irqreturn_t xen_drv_vsnd_evtchnl_interrupt(int irq, void *dev_id)
+static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 {
 	struct xen_drv_vsnd_info *drv_info = dev_id;
-	struct xen_vsndif_ctrl_channel *channel;
+	struct xen_vsndif_event_channel *channel;
 	struct xensnd_resp *resp;
 	RING_IDX i, rp;
 	unsigned long flags;
 
+#if 0
+#warning FIXME
 	channel = &drv_info->ctrl_channel;
 	spin_lock_irqsave(&channel->io_lock, flags);
 	if (unlikely(channel->state != VSNDIF_STATE_CONNECTED))
@@ -729,119 +737,100 @@ static irqreturn_t xen_drv_vsnd_evtchnl_interrupt(int irq, void *dev_id)
 
 out:
 	spin_unlock_irqrestore(&channel->io_lock, flags);
+#endif
 	return IRQ_HANDLED;
 }
 
-static int xen_drv_vsnd_ring_alloc(struct xen_drv_vsnd_info *drv_info)
+static int xen_drv_vsnd_stream_ring_alloc(struct xen_drv_vsnd_info *drv_info,
+		struct xen_vsndif_event_channel *evt_channel, int stream_idx)
 {
-	struct xenbus_device *xen_bus_dev;
-	struct xen_vsndif_ctrl_channel *channel;
+	struct xenbus_device *xen_bus_dev = drv_info->xen_bus_dev;
 	struct xen_sndif_sring *sring;
 	grant_ref_t gref;
 	int ret;
 
-	xen_bus_dev = drv_info->xen_bus_dev;
-	channel = &drv_info->ctrl_channel;
-	LOG0("Setting up control ring");
-	init_completion(&channel->completion);
-	channel->state = VSNDIF_STATE_DISCONNECTED;
-	channel->ring_ref = GRANT_INVALID_REF;
-	channel->ring.sring = NULL;
-	channel->evt_channel = -1;
-	channel->irq = -1;
+	spin_lock_init(&evt_channel->io_lock);
+	init_completion(&evt_channel->completion);
+	evt_channel->state = VSNDIF_STATE_DISCONNECTED;
+	evt_channel->ring_ref = GRANT_INVALID_REF;
+	evt_channel->ring.sring = NULL;
+	evt_channel->port = -1;
+	evt_channel->irq = -1;
 	sring = (struct xen_sndif_sring *)get_zeroed_page(GFP_NOIO | __GFP_HIGH);
 	if (!sring) {
 		ret = -ENOMEM;
-		xenbus_dev_fatal(xen_bus_dev, ret, "allocating ring page");
 		goto fail;
 	}
 	SHARED_RING_INIT(sring);
-	FRONT_RING_INIT(&channel->ring, sring, PAGE_SIZE);
+	FRONT_RING_INIT(&evt_channel->ring, sring, PAGE_SIZE);
 
 	ret = xenbus_grant_ring(xen_bus_dev, sring, 1, &gref);
 	if (ret < 0)
 		goto fail;
-	channel->ring_ref = gref;
+	evt_channel->ring_ref = gref;
 
-	ret = xenbus_alloc_evtchn(xen_bus_dev, &channel->evt_channel);
+	ret = xenbus_alloc_evtchn(xen_bus_dev, &evt_channel->port);
 	if (ret < 0)
 		goto fail;
 
-	ret = bind_evtchn_to_irqhandler(channel->evt_channel,
-			xen_drv_vsnd_evtchnl_interrupt,
+	ret = bind_evtchn_to_irqhandler(evt_channel->port,
+			xen_drv_vsnd_stream_ring_interrupt,
 			0, xen_bus_dev->devicetype, drv_info);
 
 	if (ret < 0)
 		goto fail;
-	channel->irq = ret;
+	evt_channel->irq = ret;
 	return 0;
 
 fail:
-	xenbus_dev_fatal(xen_bus_dev, ret, "allocating ring");
+	LOG0("Failed to allocate ring with err %d", ret);
 	return ret;
 }
 
-static int xen_drv_vsnd_ring_create(struct xenbus_device *xen_bus_dev,
-		struct xen_drv_vsnd_info *drv_info)
+static int xen_drv_vsnd_stream_ring_create(struct xen_drv_vsnd_info *drv_info,
+		struct xen_vsndif_event_channel *evt_channel, int stream_idx,
+		const char *path)
 {
-	struct xenbus_transaction xbt;
 	const char *message;
 	unsigned long flags;
 	int ret;
 
-	LOG0("Allocating and opening control ring channel");
+	LOG0("Allocating and opening event channel for stream %d", stream_idx);
 	/* allocate and open control channel */
-	ret = xen_drv_vsnd_ring_alloc(drv_info);
+	ret = xen_drv_vsnd_stream_ring_alloc(drv_info, evt_channel, stream_idx);
 	if (ret)
-		goto destroy_ring;;
-again:
-	ret = xenbus_transaction_start(&xbt);
-	if (ret) {
-		xenbus_dev_fatal(xen_bus_dev, ret, "starting transaction");
 		goto destroy_ring;
-	}
-
 	/* Write control channel ring reference */
-	ret = xenbus_printf(xbt, xen_bus_dev->nodename,
-			XENSND_FIELD_RING_REF, "%u",
-			drv_info->ctrl_channel.ring_ref);
+	ret = xenbus_printf(XBT_NIL, path, XENSND_FIELD_RING_REF, "%u",
+			evt_channel->ring_ref);
 	if (ret) {
 		message = "writing " XENSND_FIELD_RING_REF;
-		goto abort_transaction;
+		goto fail;
 	}
 
-	ret = xenbus_printf(xbt, xen_bus_dev->nodename,
-			XENSND_FIELD_EVT_CHNL, "%u",
-			drv_info->ctrl_channel.evt_channel);
+	ret = xenbus_printf(XBT_NIL, path, XENSND_FIELD_EVT_CHNL, "%u",
+			evt_channel->port);
 	if (ret) {
 		message = "writing " XENSND_FIELD_EVT_CHNL;
-		goto abort_transaction;
+		goto fail;
 	}
-
-	ret = xenbus_transaction_end(xbt, 0);
-	if (ret) {
-		if (ret == -EAGAIN)
-			goto again;
-		xenbus_dev_fatal(xen_bus_dev, ret, "completing transaction");
-		goto destroy_ring;
-	}
-	LOG0("Allocated and opened control ring channel: "
-			XENSND_FIELD_RING_REF " ->%u",
-			drv_info->ctrl_channel.ring_ref);
+	LOG0("Allocated and opened control event channel: %s"
+			XENSND_FIELD_RING_REF " %u "
+			XENSND_FIELD_EVT_CHNL " %u ",
+			path, evt_channel->ring_ref, evt_channel->port);
 	return 0;
 
-abort_transaction:
-	xenbus_dev_fatal(xen_bus_dev, ret, "%s", message);
-	xenbus_transaction_end(xbt, 1);
+fail:
+	LOG0("Error %s with err %d", message, ret);
 destroy_ring:
-	spin_lock_irqsave(&drv_info->ctrl_channel.io_lock, flags);
-	xen_drv_vsnd_ring_free(drv_info);
-	spin_unlock_irqrestore(&drv_info->ctrl_channel.io_lock, flags);
+	spin_lock_irqsave(&evt_channel->io_lock, flags);
+	xen_drv_vsnd_stream_ring_free(drv_info);
+	spin_unlock_irqrestore(&evt_channel->io_lock, flags);
 	return ret;
 }
 
-static inline void xen_drv_vsnd_ring_flush(
-		struct xen_vsndif_ctrl_channel *channel)
+static inline void xen_drv_vsnd_stream_ring_flush(
+		struct xen_vsndif_event_channel *channel)
 {
 	int notify;
 
@@ -853,10 +842,11 @@ static inline void xen_drv_vsnd_ring_flush(
 
 static int xen_drv_be_test_open(struct xen_drv_vsnd_info *drv_info)
 {
-	struct xen_vsndif_ctrl_channel *channel;
+	struct xen_vsndif_event_channel *channel;
 	struct xensnd_req *req;
 	unsigned long flags;
-
+#if 0
+#warning FIXME
 	channel = &drv_info->ctrl_channel;
 	BUG_ON(channel->state != VSNDIF_STATE_CONNECTED);
 
@@ -872,7 +862,7 @@ static int xen_drv_be_test_open(struct xen_drv_vsnd_info *drv_info)
 	req->u.data.operation = XENSND_OP_OPEN;
 
 	channel->ring.req_prod_pvt++;
-	xen_drv_vsnd_ring_flush(channel);
+	xen_drv_vsnd_stream_ring_flush(channel);
 	spin_unlock_irqrestore(&channel->io_lock, flags);
 
 	if (wait_for_completion_interruptible_timeout(&channel->completion,
@@ -882,6 +872,7 @@ static int xen_drv_be_test_open(struct xen_drv_vsnd_info *drv_info)
 	if (channel->resp_status < 0)
 		/* TODO: check and convert VSNDIF error code */
 		return -EIO;
+#endif
 	return 0;
 }
 
@@ -1073,7 +1064,7 @@ static int xen_drv_read_card_config_get_stream_type(char *path, int index,
 		int *num_pb, int *num_cap)
 {
 	int ret;
-	char *str;
+	char *str = NULL;
 
 	*num_pb = 0;
 	*num_cap = 0;
@@ -1114,17 +1105,19 @@ static int xen_drv_read_card_config_stream(struct xen_drv_vsnd_info *drv_info,
 		int *stream_idx)
 {
 	int ret;
-	char *str;
+	char *str = NULL;
 	struct vsndif_stream_config *stream;
 
-	path = kasprintf(GFP_KERNEL, "%s/%s/%d", path, XENSND_PATH_STREAM, index);
+	path = devm_kasprintf(&drv_info->xen_bus_dev->dev,
+			GFP_KERNEL, "%s/%s/%d", path, XENSND_PATH_STREAM, index);
 	if (!path) {
 		ret = -ENOMEM;
 		goto fail;
 	}
 	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_TYPE, NULL);
 	if (IS_ERR(str)) {
-		LOG0("Cannot find stream type at %s/%s", path, XENSND_FIELD_TYPE);
+		LOG0("Cannot find stream type at %s/%s", path,
+				XENSND_FIELD_TYPE);
 		ret = -EINVAL;
 		goto fail;
 	}
@@ -1141,18 +1134,19 @@ static int xen_drv_read_card_config_stream(struct xen_drv_vsnd_info *drv_info,
 	}
 	/* assign and publish next unique stream index */
 	stream->index = (*stream_idx)++;
-	ret = xenbus_printf(XBT_NIL, path, XENSND_FIELD_STREAM_INDEX,
-			"%d", stream->index);
+	stream->xenstore_path = path;
+	ret = xenbus_printf(XBT_NIL, stream->xenstore_path,
+			XENSND_FIELD_STREAM_INDEX, "%d", stream->index);
 	if (ret < 0)
 		goto fail;
-	xen_drv_read_pcm_hw_config(path, &pcm_instance->pcm_hw, &stream->pcm_hw);
-	LOG0("Stream %s type %s index %d", path, str, stream->index);
+	xen_drv_read_pcm_hw_config(stream->xenstore_path,
+			&pcm_instance->pcm_hw, &stream->pcm_hw);
+	LOG0("Stream %s type %s index %d", stream->xenstore_path,
+			str, stream->index);
 	ret = 0;
 fail:
 	if (str)
 		kfree(str);
-	if (path)
-		kfree(path);
 	return -ret;
 }
 
@@ -1301,6 +1295,51 @@ fail:
 	return ret;
 }
 
+static int xen_drv_create_stream_evtchannels(struct xen_drv_vsnd_info *drv_info,
+		int num_streams)
+{
+	int ret, c, d, s, stream_idx;
+	drv_info->evt_channel = devm_kzalloc(&drv_info->xen_bus_dev->dev,
+			num_streams *
+			sizeof(struct xen_vsndif_event_channel), GFP_KERNEL);
+	if (!drv_info->evt_channel) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	for (c = 0; c < drv_info->cfg_num_cards; c++) {
+		struct snd_dev_card_platdata *plat_data;
+		plat_data = &drv_info->cfg_plat_data[c];
+		for (d = 0; d < plat_data->card_config.num_devices; d++) {
+			struct vsndif_pcm_instance_config *pcm_instance;
+			pcm_instance = &plat_data->card_config.pcm_instances[d];
+			for (s = 0; s < pcm_instance->num_streams_pb; s++) {
+				stream_idx = pcm_instance->streams_pb[s].index;
+				ret = xen_drv_vsnd_stream_ring_create(drv_info,
+						&drv_info->evt_channel[stream_idx],
+						stream_idx,
+						pcm_instance->streams_pb[s].xenstore_path);
+				if (ret < 0)
+					goto fail;
+			}
+			for (s = 0; s < pcm_instance->num_streams_cap; s++) {
+				stream_idx = pcm_instance->streams_cap[s].index;
+				ret = xen_drv_vsnd_stream_ring_create(drv_info,
+						&drv_info->evt_channel[stream_idx],
+						stream_idx,
+						pcm_instance->streams_cap[s].xenstore_path);
+				if (ret < 0)
+					goto fail;
+			}
+		}
+		if (ret < 0)
+			goto fail;
+	}
+	drv_info->num_evt_channels = num_streams;
+	ret = 0;
+fail:
+	return ret;
+}
+
 static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
 {
 	struct xenbus_device *xen_bus_dev = drv_info->xen_bus_dev;
@@ -1338,6 +1377,10 @@ static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
 		if (ret < 0)
 			goto fail;
 	}
+	/* create event channels for all streams and publish */
+	ret = xen_drv_create_stream_evtchannels(drv_info, stream_idx);
+	if (ret < 0)
+		goto fail;
 	return snd_drv_vsnd_init(drv_info);
 fail:
 	return ret;
@@ -1345,11 +1388,13 @@ fail:
 
 static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
 {
-	struct xen_vsndif_ctrl_channel *channel;
+	struct xen_vsndif_event_channel *channel;
 	unsigned long flags;
 	int ret;
 
+#if 0
 	channel = &drv_info->ctrl_channel;
+#endif
 	switch (channel->state) {
 	case VSNDIF_STATE_CONNECTED:
 		/* fall through */
