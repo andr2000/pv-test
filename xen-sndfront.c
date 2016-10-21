@@ -1032,22 +1032,23 @@ static void xen_drv_read_card_config_common(const char *path,
 			&card_config->pcm_hw);
 }
 
-static int xen_drv_read_card_config_get_stream_type(char *path, int index,
+static int xen_drv_read_card_config_get_stream_type(const char *path, int index,
 		int *num_pb, int *num_cap)
 {
 	int ret;
 	char *str = NULL;
+	char *stream_path;
 
 	*num_pb = 0;
 	*num_cap = 0;
-	path = kasprintf(GFP_KERNEL, "%s/%s/%d", path, XENSND_PATH_STREAM, index);
-	if (!path) {
+	stream_path = kasprintf(GFP_KERNEL, "%s/%s/%d", path, XENSND_PATH_STREAM, index);
+	if (!stream_path) {
 		ret = -ENOMEM;
 		goto fail;
 	}
-	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_TYPE, NULL);
+	str = xenbus_read(XBT_NIL, stream_path, XENSND_FIELD_TYPE, NULL);
 	if (IS_ERR(str)) {
-		LOG0("Cannot find stream type at %s/%s", path, XENSND_FIELD_TYPE);
+		LOG0("Cannot find stream type at %s/%s", stream_path, XENSND_FIELD_TYPE);
 		ret = -EINVAL;
 		goto fail;
 	}
@@ -1063,8 +1064,8 @@ static int xen_drv_read_card_config_get_stream_type(char *path, int index,
 	}
 	ret = 0;
 fail:
-	if (path)
-		kfree(path);
+	if (stream_path)
+		kfree(stream_path);
 	if (str)
 		kfree(str);
 	return -ret;
@@ -1072,23 +1073,23 @@ fail:
 
 static int xen_drv_read_card_config_stream(struct xen_drv_vsnd_info *drv_info,
 		struct vsndif_pcm_instance_config *pcm_instance,
-		struct snd_pcm_hardware *pcm_hw_base,
-		char *path, int index, int *cur_pb, int *cur_cap,
+		const char *path, int index, int *cur_pb, int *cur_cap,
 		int *stream_idx)
 {
 	int ret;
 	char *str = NULL;
+	char *stream_path;
 	struct vsndif_stream_config *stream;
 
-	path = devm_kasprintf(&drv_info->xen_bus_dev->dev,
+	stream_path = devm_kasprintf(&drv_info->xen_bus_dev->dev,
 			GFP_KERNEL, "%s/%s/%d", path, XENSND_PATH_STREAM, index);
-	if (!path) {
+	if (!stream_path) {
 		ret = -ENOMEM;
 		goto fail;
 	}
-	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_TYPE, NULL);
+	str = xenbus_read(XBT_NIL, stream_path, XENSND_FIELD_TYPE, NULL);
 	if (IS_ERR(str)) {
-		LOG0("Cannot find stream type at %s/%s", path,
+		LOG0("Cannot find stream type at %s/%s", stream_path,
 				XENSND_FIELD_TYPE);
 		ret = -EINVAL;
 		goto fail;
@@ -1106,7 +1107,7 @@ static int xen_drv_read_card_config_stream(struct xen_drv_vsnd_info *drv_info,
 	}
 	/* assign and publish next unique stream index */
 	stream->index = (*stream_idx)++;
-	stream->xenstore_path = path;
+	stream->xenstore_path = stream_path;
 	ret = xenbus_printf(XBT_NIL, stream->xenstore_path,
 			XENSND_FIELD_STREAM_INDEX, "%d", stream->index);
 	if (ret < 0)
@@ -1125,21 +1126,22 @@ fail:
 static int xen_drv_read_card_config_device(struct xen_drv_vsnd_info *drv_info,
 		struct vsndif_pcm_instance_config *pcm_instance,
 		struct snd_pcm_hardware *pcm_hw_base,
-		char *path, const char *device_node,
+		const char *path, const char *device_node,
 		int *stream_idx)
 {
 	char **stream_nodes;
 	char *str;
+	char *device_path;
 	int ret, i, num_streams;
 	int num_pb, num_cap;
 	int cur_pb, cur_cap;
 
-	path = kasprintf(GFP_KERNEL, "%s/%s", path, device_node);
-	if (!path) {
+	device_path = kasprintf(GFP_KERNEL, "%s/%s", path, device_node);
+	if (!device_path) {
 		ret = -ENOMEM;
 		goto fail;
 	}
-	str = xenbus_read(XBT_NIL, path, XENSND_FIELD_DEVICE_NAME, NULL);
+	str = xenbus_read(XBT_NIL, device_path, XENSND_FIELD_DEVICE_NAME, NULL);
 	if (!IS_ERR(str)) {
 		strncpy(pcm_instance->name, str,
 				sizeof(pcm_instance->name));
@@ -1148,15 +1150,15 @@ static int xen_drv_read_card_config_device(struct xen_drv_vsnd_info *drv_info,
 	if (!kstrtoint(device_node, 10, &pcm_instance->device)) {
 		LOG0("Device id %d", pcm_instance->device);
 	} else {
-		LOG0("Wrong device id at %s", path);
+		LOG0("Wrong device id at %s", device_path);
 		ret = -EINVAL;
 		goto fail;
 	}
 	/* check if PCM HW configuration exists for this device
 	 * and update if so */
-	xen_drv_read_pcm_hw_config(path, pcm_hw_base, &pcm_instance->pcm_hw);
+	xen_drv_read_pcm_hw_config(device_path, pcm_hw_base, &pcm_instance->pcm_hw);
 	/* read streams */
-	stream_nodes = xen_drv_get_num_nodes(path, XENSND_PATH_STREAM,
+	stream_nodes = xen_drv_get_num_nodes(device_path, XENSND_PATH_STREAM,
 			&num_streams);
 	if (stream_nodes)
 		kfree(stream_nodes);
@@ -1165,7 +1167,7 @@ static int xen_drv_read_card_config_device(struct xen_drv_vsnd_info *drv_info,
 	pcm_instance->num_streams_cap = 0;
 	/* get number of playback and capture streams */
 	for (i = 0; i < num_streams; i++) {
-		ret = xen_drv_read_card_config_get_stream_type(path, i,
+		ret = xen_drv_read_card_config_get_stream_type(device_path, i,
 				&num_pb, &num_cap);
 		if (ret < 0)
 			goto fail;
@@ -1196,15 +1198,14 @@ static int xen_drv_read_card_config_device(struct xen_drv_vsnd_info *drv_info,
 	cur_cap = 0;
 	for (i = 0; i < num_streams; i++) {
 		ret = xen_drv_read_card_config_stream(drv_info,
-				pcm_instance, &pcm_instance->pcm_hw,
-				path, i, &cur_pb, &cur_cap, stream_idx);
+				pcm_instance, device_path, i, &cur_pb, &cur_cap, stream_idx);
 		if (ret < 0)
 			goto fail;
 	}
 	ret = 0;
 fail:
-	if (path)
-		kfree(path);
+	if (device_path)
+		kfree(device_path);
 	return -ret;
 }
 
