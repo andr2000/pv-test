@@ -581,8 +581,8 @@ fail:
 
 static void xen_drv_vsnd_remove_internal(struct xen_drv_vsnd_info *drv_info)
 {
-	xen_drv_vsnd_ring_free_all(drv_info);
 	snd_drv_vsnd_cleanup(drv_info);
+	xen_drv_vsnd_ring_free_all(drv_info);
 }
 
 static int xen_drv_vsnd_remove(struct xenbus_device *dev)
