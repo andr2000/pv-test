@@ -817,7 +817,7 @@ static int xen_drv_vsnd_stream_ring_create(struct xen_drv_vsnd_info *drv_info,
 		message = "writing " XENSND_FIELD_EVT_CHNL;
 		goto fail;
 	}
-	LOG0("Allocated and opened control event channel: %s"
+	LOG0("Allocated and opened control event channel: %s "
 			XENSND_FIELD_RING_REF " %u "
 			XENSND_FIELD_EVT_CHNL " %u ",
 			path, evt_channel->ring_ref, evt_channel->port);
@@ -1300,7 +1300,7 @@ static int xen_drv_create_stream_evtchannels(struct xen_drv_vsnd_info *drv_info,
 			goto fail;
 	}
 	drv_info->num_evt_channels = num_streams;
-	ret = 0;
+	return 0;
 fail:
 	xen_drv_vsnd_ring_free_all(drv_info);
 	return ret;
