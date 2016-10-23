@@ -963,14 +963,14 @@ static void xen_drv_pcm_hw_parse_formats(char *list, unsigned int len,
 }
 
 static void xen_drv_read_pcm_hw_config(const char *path,
-		struct snd_pcm_hardware *pcm_hw_base,
+		struct snd_pcm_hardware *parent_pcm_hw,
 		struct snd_pcm_hardware *pcm_hw)
 {
 	char *list;
 	int val;
 	unsigned int len;
 
-	*pcm_hw = *pcm_hw_base;
+	*pcm_hw = *parent_pcm_hw;
 	if (xenbus_scanf(XBT_NIL, path, XENSND_FIELD_CHANNELS_MIN,
 			"%d", &val) < 0)
 		val = 0;
@@ -1116,7 +1116,7 @@ fail:
 
 static int xen_drv_read_card_config_device(struct xen_drv_vsnd_info *drv_info,
 		struct vsndif_pcm_instance_config *pcm_instance,
-		struct snd_pcm_hardware *pcm_hw_base,
+		struct snd_pcm_hardware *parent_pcm_hw,
 		const char *path, const char *device_node,
 		int *stream_idx)
 {
@@ -1147,7 +1147,7 @@ static int xen_drv_read_card_config_device(struct xen_drv_vsnd_info *drv_info,
 	}
 	/* check if PCM HW configuration exists for this device
 	 * and update if so */
-	xen_drv_read_pcm_hw_config(device_path, pcm_hw_base, &pcm_instance->pcm_hw);
+	xen_drv_read_pcm_hw_config(device_path, parent_pcm_hw, &pcm_instance->pcm_hw);
 	/* read streams */
 	stream_nodes = xen_drv_get_num_nodes(device_path, XENSND_PATH_STREAM,
 			&num_streams);
