@@ -152,11 +152,16 @@ struct snd_dev_card_info {
 struct snd_dev_pcm_instance_info {
 	struct snd_dev_card_info *card_info;
 	struct snd_pcm *pcm;
+	struct snd_pcm_hardware pcm_hw;
 	int num_pcm_streams_pb;
 	struct snd_dev_pcm_stream_info *streams_pb;
 	int num_pcm_streams_cap;
 	struct snd_dev_pcm_stream_info *streams_cap;
 };
+
+static void snd_drv_vsnd_copy_pcm_hw(struct snd_pcm_hardware *dst,
+	struct snd_pcm_hardware *src,
+	struct snd_pcm_hardware *ref_pcm_hw);
 
 /*
  * Sound driver start
@@ -176,7 +181,9 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 	else
 		stream_info = &pcm_instance->streams_cap[substream->number];
 
-	runtime->hw = pcm_instance->card_info->pcm_hw;
+	snd_drv_vsnd_copy_pcm_hw(&runtime->hw,
+		&stream_info->pcm_hw, &pcm_instance->pcm_hw);
+
 	runtime->hw.info &= ~(SNDRV_PCM_INFO_MMAP |
 			      SNDRV_PCM_INFO_MMAP_VALID |
 			      SNDRV_PCM_INFO_DOUBLE |
@@ -318,7 +325,7 @@ static int snd_drv_vsnd_new_pcm(struct snd_dev_card_info *card_info,
 		struct snd_dev_pcm_instance_info *pcm_instance_info)
 {
 	struct snd_pcm *pcm;
-	int ret;
+	int ret, i;
 
 	LOG0("Device \"%s\" with id %d playback %d capture %d",
 			instance_config->name,
@@ -326,6 +333,8 @@ static int snd_drv_vsnd_new_pcm(struct snd_dev_card_info *card_info,
 			instance_config->num_streams_pb,
 			instance_config->num_streams_cap);
 	pcm_instance_info->card_info = card_info;
+	snd_drv_vsnd_copy_pcm_hw(&pcm_instance_info->pcm_hw,
+		&instance_config->pcm_hw, &card_info->pcm_hw);
 	/* allocate info for playback streams if any */
 	if (instance_config->num_streams_pb) {
 		pcm_instance_info->streams_pb = devm_kzalloc(&card_info->card->card_dev,
@@ -346,6 +355,13 @@ static int snd_drv_vsnd_new_pcm(struct snd_dev_card_info *card_info,
 	}
 	pcm_instance_info->num_pcm_streams_pb = instance_config->num_streams_pb;
 	pcm_instance_info->num_pcm_streams_cap = instance_config->num_streams_cap;
+	for (i = 0; i < pcm_instance_info->num_pcm_streams_pb; i++)
+		pcm_instance_info->streams_pb[i].pcm_hw =
+			instance_config->streams_pb[i].pcm_hw;
+	for (i = 0; i < pcm_instance_info->num_pcm_streams_cap; i++)
+		pcm_instance_info->streams_cap[i].pcm_hw =
+			instance_config->streams_cap[i].pcm_hw;
+
 	ret = snd_pcm_new(card_info->card, instance_config->name,
 			instance_config->device,
 			instance_config->num_streams_pb,
@@ -366,12 +382,43 @@ static int snd_drv_vsnd_new_pcm(struct snd_dev_card_info *card_info,
 	return 0;
 }
 
+static void snd_drv_vsnd_copy_pcm_hw(struct snd_pcm_hardware *dst,
+	struct snd_pcm_hardware *src,
+	struct snd_pcm_hardware *ref_pcm_hw)
+{
+	*dst = *ref_pcm_hw;
+	if (src->formats)
+		dst->formats = src->formats;
+	if (src->buffer_bytes_max)
+		dst->buffer_bytes_max =
+				src->buffer_bytes_max;
+	if (src->period_bytes_min)
+		dst->period_bytes_min =
+				src->period_bytes_min;
+	if (src->period_bytes_max)
+		dst->period_bytes_max =
+				src->period_bytes_max;
+	if (src->periods_min)
+		dst->periods_min = src->periods_min;
+	if (src->periods_max)
+		dst->periods_max = src->periods_max;
+	if (src->rates)
+		dst->rates = src->rates;
+	if (src->rate_min)
+		dst->rate_min = src->rate_min;
+	if (src->rate_max)
+		dst->rate_max = src->rate_max;
+	if (src->channels_min)
+		dst->channels_min = src->channels_min;
+	if (src->channels_max)
+		dst->channels_max = src->channels_max;
+}
+
 static int snd_drv_vsnd_probe(struct platform_device *pdev)
 {
 	struct snd_dev_card_info *card_info;
 	struct snd_dev_card_platdata *platdata;
 	struct snd_card *card;
-	struct snd_pcm_hardware *card_pcm_hw;
 	char card_id[sizeof(card->id)];
 	int ret, i;
 
@@ -397,6 +444,9 @@ static int snd_drv_vsnd_probe(struct platform_device *pdev)
 		goto fail;
 	card_info->num_pcm_instances = platdata->card_config.num_devices;
 
+	snd_drv_vsnd_copy_pcm_hw(&card_info->pcm_hw,
+		&platdata->card_config.pcm_hw, &snd_drv_pcm_hardware);
+
 	for (i = 0; i < platdata->card_config.num_devices; i++) {
 		ret = snd_drv_vsnd_new_pcm(card_info,
 				&platdata->card_config.pcm_instances[i],
@@ -404,33 +454,6 @@ static int snd_drv_vsnd_probe(struct platform_device *pdev)
 		if (ret < 0)
 			goto fail;
 	}
-	card_info->pcm_hw = snd_drv_pcm_hardware;
-	card_pcm_hw = &platdata->card_config.pcm_hw;
-	if (card_pcm_hw->formats)
-		card_info->pcm_hw.formats = card_pcm_hw->formats;
-	if (card_pcm_hw->buffer_bytes_max)
-		card_info->pcm_hw.buffer_bytes_max =
-				card_pcm_hw->buffer_bytes_max;
-	if (card_pcm_hw->period_bytes_min)
-		card_info->pcm_hw.period_bytes_min =
-				card_pcm_hw->period_bytes_min;
-	if (card_pcm_hw->period_bytes_max)
-		card_info->pcm_hw.period_bytes_max =
-				card_pcm_hw->period_bytes_max;
-	if (card_pcm_hw->periods_min)
-		card_info->pcm_hw.periods_min = card_pcm_hw->periods_min;
-	if (card_pcm_hw->periods_max)
-		card_info->pcm_hw.periods_max = card_pcm_hw->periods_max;
-	if (card_pcm_hw->rates)
-		card_info->pcm_hw.rates = card_pcm_hw->rates;
-	if (card_pcm_hw->rate_min)
-		card_info->pcm_hw.rate_min = card_pcm_hw->rate_min;
-	if (card_pcm_hw->rate_max)
-		card_info->pcm_hw.rate_max = card_pcm_hw->rate_max;
-	if (card_pcm_hw->channels_min)
-		card_info->pcm_hw.channels_min = card_pcm_hw->channels_min;
-	if (card_pcm_hw->channels_max)
-		card_info->pcm_hw.channels_max = card_pcm_hw->channels_max;
 #if 0
 		err = snd_card_dummy_new_mixer(dummy);
 		if (err < 0)
