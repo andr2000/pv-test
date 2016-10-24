@@ -1595,10 +1595,8 @@ static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
 	drv_info->cfg_plat_data = devm_kzalloc(&drv_info->xen_bus_dev->dev,
 			drv_info->cfg_num_cards *
 			sizeof(struct snd_dev_card_platdata), GFP_KERNEL);
-	if (!drv_info->cfg_plat_data) {
-		ret = -ENOMEM;
-		goto fail;
-	}
+	if (!drv_info->cfg_plat_data)
+		return -ENOMEM;
 	/* stream index must be unique through all cards: pass it in to be
 	 * incremented when creating streams */
 	stream_idx = 0;
@@ -1610,20 +1608,15 @@ static int xen_drv_talk_to_soundback(struct xen_drv_vsnd_info *drv_info)
 		ret = xen_drv_read_card_config(drv_info,
 				&drv_info->cfg_plat_data[i], &stream_idx);
 		if (ret < 0)
-			goto fail;
+			return ret;
 	}
 	/* create event channels for all streams and publish */
-	ret = xen_drv_create_stream_evtchannels(drv_info, stream_idx);
-	if (ret < 0)
-		goto fail;
-	return snd_drv_vsnd_init(drv_info);
-fail:
-	return ret;
+	return xen_drv_create_stream_evtchannels(drv_info, stream_idx);
 }
 
 static int xen_drv_vsnd_on_backend_connected(struct xen_drv_vsnd_info *drv_info)
 {
-	return 0;
+	return snd_drv_vsnd_init(drv_info);
 }
 
 static void xen_drv_vsnd_on_backend_disconnected(struct xen_drv_vsnd_info *drv_info)
