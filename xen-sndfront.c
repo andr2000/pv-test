@@ -882,8 +882,10 @@ static void xen_drv_vsnd_backend_changed(struct xenbus_device *xen_bus_dev,
 		mutex_lock(&drv_info->mutex);
 		ret = xen_drv_talk_to_soundback(drv_info);
 		mutex_unlock(&drv_info->mutex);
-		if (ret < 0)
+		if (ret < 0) {
+			xenbus_dev_fatal(xen_bus_dev, ret, "initializing frontend");
 			break;
+		}
 		xenbus_switch_state(xen_bus_dev, XenbusStateInitialised);
 		break;
 
@@ -893,8 +895,10 @@ static void xen_drv_vsnd_backend_changed(struct xenbus_device *xen_bus_dev,
 		mutex_lock(&drv_info->mutex);
 		ret = xen_drv_vsnd_on_backend_connected(drv_info);
 		mutex_unlock(&drv_info->mutex);
-		if (ret < 0)
+		if (ret < 0) {
+			xenbus_dev_fatal(xen_bus_dev, ret, "initializing sound driver");
 			break;
+		}
 		LOG0("Sound initialized");
 		xenbus_switch_state(xen_bus_dev, XenbusStateConnected);
 		break;
