@@ -101,7 +101,7 @@ struct xen_drv_vsnd_info {
 struct snd_dev_pcm_stream_info {
 	int index;
 	struct snd_pcm_hardware pcm_hw;
-	struct xen_vsndif_event_channel evt_channel;
+	struct xen_vsndif_event_channel *evt_channel;
 	grant_ref_t grefs[XENSND_MAX_PAGES_PER_REQUEST];
 	unsigned char *vbuffer;
 	bool is_open;
@@ -198,8 +198,8 @@ static inline struct xensnd_req *snd_drv_stream_prepare_req(
 {
 	struct xensnd_req *req;
 
-	req = (struct xensnd_req *)RING_GET_REQUEST(&stream->evt_channel.ring,
-			stream->evt_channel.ring.req_prod_pvt);
+	req = (struct xensnd_req *)RING_GET_REQUEST(&stream->evt_channel->ring,
+			stream->evt_channel->ring.req_prod_pvt);
 	req->u.data.operation = operation;
 	req->u.data.stream_idx = stream->index;
 	req->u.data.id = stream->req_next_id++;
@@ -208,7 +208,7 @@ static inline struct xensnd_req *snd_drv_stream_prepare_req(
 
 static inline int snd_drv_stream_wait_resp(struct snd_dev_pcm_stream_info *stream)
 {
-	if (wait_for_completion_interruptible_timeout(&stream->evt_channel.completion,
+	if (wait_for_completion_interruptible_timeout(&stream->evt_channel->completion,
 			msecs_to_jiffies(VSND_WAIT_BACK_MS)) <= 0)
 		return -ETIMEDOUT;
 	return 0;
@@ -255,11 +255,11 @@ int snd_drv_stream_open(struct snd_pcm_substream *substream,
 	int ret;
 	unsigned long flags;
 
-	LOG0("Opening stream idx %d", stream->index);
+	LOG0("Opening stream idx %d evt port %u", stream->index, stream->evt_channel->port);
 	xen_drv_info = pcm_instance->card_info->xen_drv_info;
 	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
-	reinit_completion(&stream->evt_channel.completion);
-	if (unlikely(stream->evt_channel.state != VSNDIF_STATE_CONNECTED)) {
+	reinit_completion(&stream->evt_channel->completion);
+	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
 		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 		return -EIO;
 	}
@@ -269,7 +269,7 @@ int snd_drv_stream_open(struct snd_pcm_substream *substream,
 	req->u.data.op.open.channels = runtime->channels;
 	req->u.data.op.open.rate = runtime->rate;
 
-	xen_drv_vsnd_stream_ring_flush(&stream->evt_channel);
+	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
 
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 
@@ -278,7 +278,7 @@ int snd_drv_stream_open(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		return ret;
 	stream->is_open = true;
-	return sndif_to_kern_error(stream->evt_channel.resp_status);
+	return sndif_to_kern_error(stream->evt_channel->resp_status);
 }
 
 int snd_drv_stream_close(struct snd_pcm_substream *substream,
@@ -294,15 +294,15 @@ int snd_drv_stream_close(struct snd_pcm_substream *substream,
 	LOG0("Closing stream idx %d", stream->index);
 	xen_drv_info = pcm_instance->card_info->xen_drv_info;
 	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
-	reinit_completion(&stream->evt_channel.completion);
-	if (unlikely(stream->evt_channel.state != VSNDIF_STATE_CONNECTED)) {
+	reinit_completion(&stream->evt_channel->completion);
+	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
 		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 		return -EIO;
 	}
 
 	req = snd_drv_stream_prepare_req(stream, XENSND_OP_CLOSE);
 
-	xen_drv_vsnd_stream_ring_flush(&stream->evt_channel);
+	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
 
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 
@@ -311,7 +311,7 @@ int snd_drv_stream_close(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		return ret;
 	stream->is_open = false;
-	return sndif_to_kern_error(stream->evt_channel.resp_status);
+	return sndif_to_kern_error(stream->evt_channel->resp_status);
 }
 
 int snd_drv_pcm_open(struct snd_pcm_substream *substream)
@@ -320,9 +320,11 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 			snd_pcm_substream_chip(substream);
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct xen_drv_vsnd_info *xen_drv_info;
+	unsigned long flags;
 
-	LOG0("Substream is %s direction %d number %d", substream->name,
-			substream->stream, substream->number);
+	LOG0("Substream is %s direction %d number %d stream idx %d", substream->name,
+			substream->stream, substream->number, stream->index);
 
 	snd_drv_vsnd_copy_pcm_hw(&runtime->hw,
 		&stream->pcm_hw, &pcm_instance->pcm_hw);
@@ -336,17 +338,30 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 			      SNDRV_PCM_INFO_PAUSE);
 	runtime->hw.info |= SNDRV_PCM_INFO_INTERLEAVED;
 
+	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
 	stream->req_next_id = 0;
 	stream->is_open = false;
 	stream->vbuffer = NULL;
-	stream->evt_channel =
-			pcm_instance->card_info->xen_drv_info->evt_channel[stream->index];
+	stream->evt_channel = &xen_drv_info->evt_channel[stream->index];
+	stream->evt_channel->state = VSNDIF_STATE_CONNECTED;
+	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 	return 0;
 }
 
 int snd_drv_pcm_close(struct snd_pcm_substream *substream)
 {
+	struct snd_dev_pcm_instance_info *pcm_instance =
+			snd_pcm_substream_chip(substream);
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct xen_drv_vsnd_info *xen_drv_info;
+	unsigned long flags;
+
 	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
+	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
+	stream->evt_channel->state = VSNDIF_STATE_DISCONNECTED;
+	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 	return 0;
 }
 
@@ -358,7 +373,8 @@ int snd_drv_pcm_hw_params(struct snd_pcm_substream *substream,
 	int ret, i, cur_ref;
 	int otherend_id;
 
-	LOG0("Substream is %s, allocating buffers", substream->name);
+	LOG0("Substream is %s, allocating buffers for idx %d", substream->name,
+			stream->index);
 	/* TODO: use XC_PAGE_SIZE */
 	stream->vbuffer = vmalloc(ARRAY_SIZE(stream->grefs) * PAGE_SIZE);
 	if (!stream->vbuffer) {
@@ -369,7 +385,7 @@ int snd_drv_pcm_hw_params(struct snd_pcm_substream *substream,
 			&priv_gref_head);
 	if (ret)
 		goto fail;
-	otherend_id = stream->evt_channel.drv_info->xen_bus_dev->otherend_id;
+	otherend_id = stream->evt_channel->drv_info->xen_bus_dev->otherend_id;
 	for (i = 0; i < ARRAY_SIZE(stream->grefs); i++) {
 		cur_ref = gnttab_claim_grant_reference(&priv_gref_head);
 		if (cur_ref < 0) {
@@ -382,9 +398,11 @@ int snd_drv_pcm_hw_params(struct snd_pcm_substream *substream,
 		stream->grefs[i] = cur_ref;
 	}
 	gnttab_free_grant_references(priv_gref_head);
+	LOG0("Allocated buffers for stream idx %d", stream->index);
 	return 0;
 
 fail:
+	LOG0("Failed to allocate buffers for stream idx %d", stream->index);
 	snd_drv_stream_free(stream);
 	return ret;
 }
@@ -565,12 +583,18 @@ static int snd_drv_vsnd_new_pcm(struct snd_dev_card_info *card_info,
 	}
 	pcm_instance_info->num_pcm_streams_pb = instance_config->num_streams_pb;
 	pcm_instance_info->num_pcm_streams_cap = instance_config->num_streams_cap;
-	for (i = 0; i < pcm_instance_info->num_pcm_streams_pb; i++)
+	for (i = 0; i < pcm_instance_info->num_pcm_streams_pb; i++) {
 		pcm_instance_info->streams_pb[i].pcm_hw =
 			instance_config->streams_pb[i].pcm_hw;
-	for (i = 0; i < pcm_instance_info->num_pcm_streams_cap; i++)
+		pcm_instance_info->streams_pb[i].index =
+			instance_config->streams_pb[i].index;
+	}
+	for (i = 0; i < pcm_instance_info->num_pcm_streams_cap; i++) {
 		pcm_instance_info->streams_cap[i].pcm_hw =
 			instance_config->streams_cap[i].pcm_hw;
+		pcm_instance_info->streams_cap[i].index =
+			instance_config->streams_cap[i].index;
+	}
 
 	ret = snd_pcm_new(card_info->card, instance_config->name,
 			instance_config->device,
@@ -917,7 +941,6 @@ static void xen_drv_vsnd_stream_ring_free(struct xen_drv_vsnd_info *drv_info,
 	channel->ring.sring = NULL;
 }
 
-
 static void xen_drv_vsnd_ring_free_all(struct xen_drv_vsnd_info *drv_info)
 {
 	int i;
@@ -941,8 +964,10 @@ static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 	unsigned long flags;
 
 	spin_lock_irqsave(&drv_info->io_lock, flags);
-	if (unlikely(channel->state != VSNDIF_STATE_CONNECTED))
+	if (unlikely(channel->state != VSNDIF_STATE_CONNECTED)) {
+		LOG0("channel->state != VSNDIF_STATE_CONNECTED for port %d", channel->port);
 		goto out;
+	}
 
  again:
 	rp = channel->ring.sring->rsp_prod;
@@ -950,12 +975,14 @@ static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 
 	for (i = channel->ring.rsp_cons; i != rp; i++) {
 		resp = (struct xensnd_resp *)RING_GET_RESPONSE(&channel->ring, i);
+		LOG0("Got response");
 		switch (resp->u.data.operation) {
 		case XENSND_OP_OPEN:
 		case XENSND_OP_CLOSE:
 		case XENSND_OP_READ:
 		case XENSND_OP_WRITE:
 			channel->resp_status = resp->u.data.status;
+			LOG0("complete(&channel->completion) status %d", channel->resp_status);
 			complete(&channel->completion);
 			break;
 		case XENSND_OP_SET_VOLUME:
@@ -985,7 +1012,7 @@ out:
 }
 
 static int xen_drv_vsnd_stream_ring_alloc(struct xen_drv_vsnd_info *drv_info,
-		struct xen_vsndif_event_channel *evt_channel, int stream_idx)
+		struct xen_vsndif_event_channel *evt_channel)
 {
 	struct xenbus_device *xen_bus_dev = drv_info->xen_bus_dev;
 	struct xen_sndif_sring *sring;
@@ -1032,15 +1059,15 @@ fail:
 }
 
 static int xen_drv_vsnd_stream_ring_create(struct xen_drv_vsnd_info *drv_info,
-		struct xen_vsndif_event_channel *evt_channel, int stream_idx,
+		struct xen_vsndif_event_channel *evt_channel,
 		const char *path)
 {
 	const char *message;
 	int ret;
 
-	LOG0("Allocating and opening event channel for stream %d", stream_idx);
+	LOG0("Allocating and opening event channel");
 	/* allocate and open control channel */
-	ret = xen_drv_vsnd_stream_ring_alloc(drv_info, evt_channel, stream_idx);
+	ret = xen_drv_vsnd_stream_ring_alloc(drv_info, evt_channel);
 	if (ret < 0) {
 		message = "allocating event channel";
 		goto fail;
@@ -1525,7 +1552,6 @@ static int xen_drv_create_stream_evtchannels(struct xen_drv_vsnd_info *drv_info,
 				stream_idx = pcm_instance->streams_pb[s].index;
 				ret = xen_drv_vsnd_stream_ring_create(drv_info,
 						&drv_info->evt_channel[stream_idx],
-						stream_idx,
 						pcm_instance->streams_pb[s].xenstore_path);
 				if (ret < 0)
 					goto fail;
@@ -1534,7 +1560,6 @@ static int xen_drv_create_stream_evtchannels(struct xen_drv_vsnd_info *drv_info,
 				stream_idx = pcm_instance->streams_cap[s].index;
 				ret = xen_drv_vsnd_stream_ring_create(drv_info,
 						&drv_info->evt_channel[stream_idx],
-						stream_idx,
 						pcm_instance->streams_cap[s].xenstore_path);
 				if (ret < 0)
 					goto fail;
