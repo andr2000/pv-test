@@ -28,6 +28,7 @@
 #include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <linux/irq.h>
+#include <linux/vmalloc.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -101,6 +102,10 @@ struct snd_dev_pcm_stream_info {
 	int index;
 	struct snd_pcm_hardware pcm_hw;
 	struct xen_vsndif_event_channel evt_channel;
+	grant_ref_t grefs[XENSND_MAX_PAGES_PER_REQUEST];
+	unsigned char *vbuffer;
+	bool is_open;
+	uint8_t req_next_id;
 };
 
 struct vsndif_stream_config {
@@ -163,26 +168,164 @@ static void snd_drv_vsnd_copy_pcm_hw(struct snd_pcm_hardware *dst,
 	struct snd_pcm_hardware *src,
 	struct snd_pcm_hardware *ref_pcm_hw);
 
+static inline void xen_drv_vsnd_stream_ring_flush(
+		struct xen_vsndif_event_channel *channel);
+
+static int sndif_to_kern_error(int sndif_err)
+{
+	switch (sndif_err) {
+	case XENSND_RSP_OKAY:
+		return 0;
+	case XENSND_RSP_ERROR:
+		return -EIO;
+	default:
+		BUG();
+	}
+}
+
+static uint64_t alsa_to_sndif_format(snd_pcm_format_t format)
+{
+	return format;
+}
+
 /*
  * Sound driver start
  */
+
+static inline struct xensnd_req *snd_drv_stream_prepare_req(
+		struct snd_dev_pcm_stream_info *stream,
+		uint8_t operation)
+{
+	struct xensnd_req *req;
+
+	req = (struct xensnd_req *)RING_GET_REQUEST(&stream->evt_channel.ring,
+			stream->evt_channel.ring.req_prod_pvt);
+	req->u.data.operation = operation;
+	req->u.data.stream_idx = stream->index;
+	req->u.data.id = stream->req_next_id++;
+	return req;
+}
+
+static inline int snd_drv_stream_wait_resp(struct snd_dev_pcm_stream_info *stream)
+{
+	if (wait_for_completion_interruptible_timeout(&stream->evt_channel.completion,
+			msecs_to_jiffies(VSND_WAIT_BACK_MS)) <= 0)
+		return -ETIMEDOUT;
+	return 0;
+}
+
+struct snd_dev_pcm_stream_info * snd_drv_stream_get(
+		struct snd_pcm_substream *substream)
+{
+	struct snd_dev_pcm_instance_info *pcm_instance =
+			snd_pcm_substream_chip(substream);
+	struct snd_dev_pcm_stream_info *stream;
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		stream = &pcm_instance->streams_pb[substream->number];
+	else
+		stream = &pcm_instance->streams_cap[substream->number];
+	BUG_ON(stream == NULL);
+	return stream;
+}
+
+void snd_drv_stream_free(struct snd_dev_pcm_stream_info *stream)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(stream->grefs); i++)
+		if (stream->grefs[i])
+			gnttab_end_foreign_access(stream->grefs[i], 0, 0UL);
+	memset(stream->grefs, 0, sizeof(stream->grefs));
+	if (stream->vbuffer)
+		vfree(stream->vbuffer);
+	stream->vbuffer = NULL;
+	stream->is_open = false;
+	stream->req_next_id = 0;
+}
+
+int snd_drv_stream_open(struct snd_pcm_substream *substream,
+		struct snd_dev_pcm_stream_info *stream)
+{
+	struct snd_dev_pcm_instance_info *pcm_instance =
+				snd_pcm_substream_chip(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct xen_drv_vsnd_info *xen_drv_info;
+	struct xensnd_req *req;
+	int ret;
+	unsigned long flags;
+
+	LOG0("Opening stream idx %d", stream->index);
+	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
+	reinit_completion(&stream->evt_channel.completion);
+	if (unlikely(stream->evt_channel.state != VSNDIF_STATE_CONNECTED)) {
+		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+		return -EIO;
+	}
+
+	req = snd_drv_stream_prepare_req(stream, XENSND_OP_OPEN);
+	req->u.data.op.open.format = alsa_to_sndif_format(runtime->format);
+	req->u.data.op.open.channels = runtime->channels;
+	req->u.data.op.open.rate = runtime->rate;
+
+	xen_drv_vsnd_stream_ring_flush(&stream->evt_channel);
+
+	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+
+	ret = snd_drv_stream_wait_resp(stream);
+	LOG0("Got response ret %d", ret);
+	if (ret < 0)
+		return ret;
+	stream->is_open = true;
+	return sndif_to_kern_error(stream->evt_channel.resp_status);
+}
+
+int snd_drv_stream_close(struct snd_pcm_substream *substream,
+		struct snd_dev_pcm_stream_info *stream)
+{
+	struct snd_dev_pcm_instance_info *pcm_instance =
+				snd_pcm_substream_chip(substream);
+	struct xen_drv_vsnd_info *xen_drv_info;
+	struct xensnd_req *req;
+	int ret;
+	unsigned long flags;
+
+	LOG0("Closing stream idx %d", stream->index);
+	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
+	reinit_completion(&stream->evt_channel.completion);
+	if (unlikely(stream->evt_channel.state != VSNDIF_STATE_CONNECTED)) {
+		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+		return -EIO;
+	}
+
+	req = snd_drv_stream_prepare_req(stream, XENSND_OP_CLOSE);
+
+	xen_drv_vsnd_stream_ring_flush(&stream->evt_channel);
+
+	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+
+	ret = snd_drv_stream_wait_resp(stream);
+	LOG0("Got response ret %d", ret);
+	if (ret < 0)
+		return ret;
+	stream->is_open = false;
+	return sndif_to_kern_error(stream->evt_channel.resp_status);
+}
 
 int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 {
 	struct snd_dev_pcm_instance_info *pcm_instance =
 			snd_pcm_substream_chip(substream);
-	struct snd_dev_pcm_stream_info *stream_info;
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
-	LOG0("TODO: mutex_lock/unlock: Substream is %s direction %d number %d", substream->name,
+	LOG0("Substream is %s direction %d number %d", substream->name,
 			substream->stream, substream->number);
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		stream_info = &pcm_instance->streams_pb[substream->number];
-	else
-		stream_info = &pcm_instance->streams_cap[substream->number];
 
 	snd_drv_vsnd_copy_pcm_hw(&runtime->hw,
-		&stream_info->pcm_hw, &pcm_instance->pcm_hw);
+		&stream->pcm_hw, &pcm_instance->pcm_hw);
 
 	runtime->hw.info &= ~(SNDRV_PCM_INFO_MMAP |
 			      SNDRV_PCM_INFO_MMAP_VALID |
@@ -193,7 +336,11 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 			      SNDRV_PCM_INFO_PAUSE);
 	runtime->hw.info |= SNDRV_PCM_INFO_INTERLEAVED;
 
-	LOG0("stream_idx == %d", stream_info->index);
+	stream->req_next_id = 0;
+	stream->is_open = false;
+	stream->vbuffer = NULL;
+	stream->evt_channel =
+			pcm_instance->card_info->xen_drv_info->evt_channel[stream->index];
 	return 0;
 }
 
@@ -206,25 +353,88 @@ int snd_drv_pcm_close(struct snd_pcm_substream *substream)
 int snd_drv_pcm_hw_params(struct snd_pcm_substream *substream,
 		 struct snd_pcm_hw_params *params)
 {
-	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	grant_ref_t priv_gref_head;
+	int ret, i, cur_ref;
+	int otherend_id;
+
+	LOG0("Substream is %s, allocating buffers", substream->name);
+	/* TODO: use XC_PAGE_SIZE */
+	stream->vbuffer = vmalloc(ARRAY_SIZE(stream->grefs) * PAGE_SIZE);
+	if (!stream->vbuffer) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	ret = gnttab_alloc_grant_references(ARRAY_SIZE(stream->grefs),
+			&priv_gref_head);
+	if (ret)
+		goto fail;
+	otherend_id = stream->evt_channel.drv_info->xen_bus_dev->otherend_id;
+	for (i = 0; i < ARRAY_SIZE(stream->grefs); i++) {
+		cur_ref = gnttab_claim_grant_reference(&priv_gref_head);
+		if (cur_ref < 0) {
+			ret = cur_ref;
+			goto fail;
+		}
+		gnttab_grant_foreign_access_ref(cur_ref, otherend_id,
+				xen_page_to_gfn(vmalloc_to_page(stream->vbuffer +
+						PAGE_SIZE * i)), 0);
+		stream->grefs[i] = cur_ref;
+	}
+	gnttab_free_grant_references(priv_gref_head);
 	return 0;
+
+fail:
+	snd_drv_stream_free(stream);
+	return ret;
 }
 
 int snd_drv_pcm_hw_free(struct snd_pcm_substream *substream)
 {
-	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
-	return 0;
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	int ret;
+
+	LOG0("Substream is %s", substream->name);
+	ret = snd_drv_stream_close(substream, stream);
+	snd_drv_stream_free(stream);
+	return ret;
 }
 
 int snd_drv_pcm_prepare(struct snd_pcm_substream *substream)
 {
-	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
-	return 0;
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	int ret;
+
+	LOG0("Substream is %s", substream->name);
+	/* ready to play/capture. N.B. this can be called multiple times, e.g.
+	 * after underruns etc, so have to close the active stream if any as
+	 * a recovery mechanism
+	 */
+	if (stream->is_open) {
+		ret = snd_drv_stream_close(substream, stream);
+		if (ret < 0)
+			return ret;
+	}
+	return snd_drv_stream_open(substream, stream);
 }
 
 int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+		/* fall through */
+	case SNDRV_PCM_TRIGGER_RESUME:
+		/* do something to start the PCM engine */
+		break;
+	case SNDRV_PCM_TRIGGER_STOP:
+		/* fall through */
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+		/* do something to stop the PCM engine */
+		break;
+	default:
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -742,8 +952,16 @@ static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 		resp = (struct xensnd_resp *)RING_GET_RESPONSE(&channel->ring, i);
 		switch (resp->u.data.operation) {
 		case XENSND_OP_OPEN:
-			LOG0("Got response on XENSND_OP_OPEN");
+		case XENSND_OP_CLOSE:
+		case XENSND_OP_READ:
+		case XENSND_OP_WRITE:
 			channel->resp_status = resp->u.data.status;
+			complete(&channel->completion);
+			break;
+		case XENSND_OP_SET_VOLUME:
+		case XENSND_OP_GET_VOLUME:
+			LOG0("Not supported");
+			channel->resp_status = XENSND_RSP_OKAY;
 			complete(&channel->completion);
 			break;
 		default:
@@ -787,6 +1005,7 @@ static int xen_drv_vsnd_stream_ring_alloc(struct xen_drv_vsnd_info *drv_info,
 		goto fail;
 	}
 	SHARED_RING_INIT(sring);
+	/* TODO: use XC_PAGE_SIZE */
 	FRONT_RING_INIT(&evt_channel->ring, sring, PAGE_SIZE);
 
 	ret = xenbus_grant_ring(xen_bus_dev, sring, 1, &gref);
@@ -855,6 +1074,8 @@ static inline void xen_drv_vsnd_stream_ring_flush(
 		struct xen_vsndif_event_channel *channel)
 {
 	int notify;
+
+	channel->ring.req_prod_pvt++;
 
 	RING_PUSH_REQUESTS_AND_CHECK_NOTIFY(&channel->ring, notify);
 
