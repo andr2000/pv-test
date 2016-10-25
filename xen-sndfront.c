@@ -88,6 +88,9 @@ struct snd_dev_pcm_stream_info {
 	unsigned char *vbuffer;
 	bool is_open;
 	uint8_t req_next_id;
+	snd_pcm_uframes_t pos;
+	/* number of bytes behind the current buffer page */
+	snd_pcm_uframes_t cross_boundary_cnt;
 };
 
 struct snd_dev_pcm_instance_info {
@@ -346,6 +349,8 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 	stream->vbuffer = NULL;
 	stream->evt_channel = &xen_drv_info->evt_channel[stream->index];
 	stream->evt_channel->state = VSNDIF_STATE_CONNECTED;
+	stream->pos = 0;
+	stream->cross_boundary_cnt = 0;
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 	return 0;
 }
@@ -473,8 +478,53 @@ int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
 		snd_pcm_uframes_t pos,
 		void __user *buf, snd_pcm_uframes_t count)
 {
-	LOG0("TODO: mutex_lock/unlock: Substream is %s channel %d pos %lu count %lu", substream->name, channel, pos, count);
-	return 0;
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_dev_pcm_instance_info *pcm_instance =
+				snd_pcm_substream_chip(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct xen_drv_vsnd_info *xen_drv_info;
+	struct xensnd_req *req;
+	unsigned long flags;
+	ssize_t len;
+	int ret;
+
+	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
+			substream->name, channel, pos, count,
+			stream->index, stream->evt_channel->port);
+
+	stream->pos = (stream->pos + count) % runtime->buffer_size;
+	stream->cross_boundary_cnt = count / runtime->buffer_size;
+	len = frames_to_bytes(runtime, count);
+	/* TODO: use XC_PAGE_SIZE */
+	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
+		return -EFAULT;
+	if (copy_from_user(stream->vbuffer, buf, len))
+		return -EFAULT;
+
+	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
+	reinit_completion(&stream->evt_channel->completion);
+	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
+		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+		return -EIO;
+	}
+
+	req = snd_drv_stream_prepare_req(stream, XENSND_OP_WRITE);
+	req->u.data.op.write.len = len + BUILD_BUG_ON_ZERO(
+			ARRAY_SIZE(req->u.data.op.write.grefs) !=
+			ARRAY_SIZE(stream->grefs));
+	memcpy(&req->u.data.op.write.grefs, &stream->grefs,
+			sizeof(req->u.data.op.write.grefs));
+
+	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
+
+	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+
+	ret = snd_drv_stream_wait_resp(stream);
+	LOG0("Got response ret %d", ret);
+	if (ret < 0)
+		return ret;
+	return sndif_to_kern_error(stream->evt_channel->resp_status);
 }
 
 int snd_drv_pcm_capture_copy(struct snd_pcm_substream *substream, int channel,
