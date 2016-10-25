@@ -444,17 +444,22 @@ int snd_drv_pcm_prepare(struct snd_pcm_substream *substream)
 
 int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
-	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	LOG0("Substream is %s direction %d number %d stream idx %d", substream->name,
+			substream->stream, substream->number, stream->index);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 		/* fall through */
 	case SNDRV_PCM_TRIGGER_RESUME:
 		/* do something to start the PCM engine */
+		substream->runtime->stop_threshold =
+				substream->runtime->buffer_size + 1;
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 		/* fall through */
 	case SNDRV_PCM_TRIGGER_SUSPEND:
-		/* do something to stop the PCM engine */
+		substream->runtime->stop_threshold =
+				substream->runtime->buffer_size;
 		break;
 	default:
 		return -EINVAL;
