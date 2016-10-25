@@ -177,8 +177,11 @@ static int sndif_to_kern_error(int sndif_err)
 	case XENSND_RSP_ERROR:
 		return -EIO;
 	default:
-		BUG();
+		LOG0("Unsupported error code: %d", sndif_err);
+		dump_stack();
+		break;
 	}
+	return -EIO;
 }
 
 static uint64_t alsa_to_sndif_format(snd_pcm_format_t format)
