@@ -67,9 +67,7 @@ enum vsndif_state {
 	VSNDIF_STATE_SUSPENDED,
 };
 
-struct xen_drv_vsnd_info;
-
-struct xen_vsndif_event_channel {
+struct xen_vsndif_event_channel_info {
 	struct xen_drv_vsnd_info *drv_info;
 	struct xen_sndif_front_ring ring;
 	int ring_ref;
@@ -82,6 +80,35 @@ struct xen_vsndif_event_channel {
 	int resp_status;
 };
 
+struct snd_dev_pcm_stream_info {
+	int index;
+	struct snd_pcm_hardware pcm_hw;
+	struct xen_vsndif_event_channel_info *evt_channel;
+	grant_ref_t grefs[XENSND_MAX_PAGES_PER_REQUEST];
+	unsigned char *vbuffer;
+	bool is_open;
+	uint8_t req_next_id;
+};
+
+struct snd_dev_pcm_instance_info {
+	struct snd_dev_card_info *card_info;
+	struct snd_pcm *pcm;
+	struct snd_pcm_hardware pcm_hw;
+	int num_pcm_streams_pb;
+	struct snd_dev_pcm_stream_info *streams_pb;
+	int num_pcm_streams_cap;
+	struct snd_dev_pcm_stream_info *streams_cap;
+};
+
+struct snd_dev_card_info {
+	struct xen_drv_vsnd_info *xen_drv_info;
+	struct snd_card *card;
+	struct snd_pcm_hardware pcm_hw;
+	/* array of PCM instances of this card */
+	int num_pcm_instances;
+	struct snd_dev_pcm_instance_info *pcm_instance;
+};
+
 struct xen_drv_vsnd_info {
 	struct xenbus_device *xen_bus_dev;
 	spinlock_t io_lock;
@@ -91,21 +118,11 @@ struct xen_drv_vsnd_info {
 	struct platform_device **snd_drv_dev;
 
 	int num_evt_channels;
-	struct xen_vsndif_event_channel *evt_channel;
+	struct xen_vsndif_event_channel_info *evt_channel;
 
 	/* number of virtual cards */
 	int cfg_num_cards;
 	struct snd_dev_card_platdata *cfg_plat_data;
-};
-
-struct snd_dev_pcm_stream_info {
-	int index;
-	struct snd_pcm_hardware pcm_hw;
-	struct xen_vsndif_event_channel *evt_channel;
-	grant_ref_t grefs[XENSND_MAX_PAGES_PER_REQUEST];
-	unsigned char *vbuffer;
-	bool is_open;
-	uint8_t req_next_id;
 };
 
 struct vsndif_stream_config {
@@ -145,31 +162,12 @@ struct snd_dev_card_platdata {
 	struct vsndif_card_config card_config;
 };
 
-struct snd_dev_card_info {
-	struct xen_drv_vsnd_info *xen_drv_info;
-	struct snd_card *card;
-	struct snd_pcm_hardware pcm_hw;
-	/* array of PCM instances of this card */
-	int num_pcm_instances;
-	struct snd_dev_pcm_instance_info *pcm_instance;
-};
-
-struct snd_dev_pcm_instance_info {
-	struct snd_dev_card_info *card_info;
-	struct snd_pcm *pcm;
-	struct snd_pcm_hardware pcm_hw;
-	int num_pcm_streams_pb;
-	struct snd_dev_pcm_stream_info *streams_pb;
-	int num_pcm_streams_cap;
-	struct snd_dev_pcm_stream_info *streams_cap;
-};
-
 static void snd_drv_vsnd_copy_pcm_hw(struct snd_pcm_hardware *dst,
 	struct snd_pcm_hardware *src,
 	struct snd_pcm_hardware *ref_pcm_hw);
 
 static inline void xen_drv_vsnd_stream_ring_flush(
-		struct xen_vsndif_event_channel *channel);
+		struct xen_vsndif_event_channel_info *channel);
 
 static int sndif_to_kern_error(int sndif_err)
 {
@@ -922,7 +920,7 @@ static void xen_drv_vsnd_backend_changed(struct xenbus_device *xen_bus_dev,
 }
 
 static void xen_drv_vsnd_stream_ring_free(struct xen_drv_vsnd_info *drv_info,
-		struct xen_vsndif_event_channel *channel)
+		struct xen_vsndif_event_channel_info *channel)
 {
 	LOG0("Cleaning up ring-ref %u at port %u",
 			channel->ring_ref, channel->port);
@@ -961,7 +959,7 @@ static void xen_drv_vsnd_ring_free_all(struct xen_drv_vsnd_info *drv_info)
 
 static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 {
-	struct xen_vsndif_event_channel *channel = dev_id;
+	struct xen_vsndif_event_channel_info *channel = dev_id;
 	struct xen_drv_vsnd_info *drv_info = channel->drv_info;
 	struct xensnd_resp *resp;
 	RING_IDX i, rp;
@@ -1016,7 +1014,7 @@ out:
 }
 
 static int xen_drv_vsnd_stream_ring_alloc(struct xen_drv_vsnd_info *drv_info,
-		struct xen_vsndif_event_channel *evt_channel)
+		struct xen_vsndif_event_channel_info *evt_channel)
 {
 	struct xenbus_device *xen_bus_dev = drv_info->xen_bus_dev;
 	struct xen_sndif_sring *sring;
@@ -1063,7 +1061,7 @@ fail:
 }
 
 static int xen_drv_vsnd_stream_ring_create(struct xen_drv_vsnd_info *drv_info,
-		struct xen_vsndif_event_channel *evt_channel,
+		struct xen_vsndif_event_channel_info *evt_channel,
 		const char *path)
 {
 	const char *message;
@@ -1102,7 +1100,7 @@ fail:
 }
 
 static inline void xen_drv_vsnd_stream_ring_flush(
-		struct xen_vsndif_event_channel *channel)
+		struct xen_vsndif_event_channel_info *channel)
 {
 	int notify;
 
@@ -1541,7 +1539,7 @@ static int xen_drv_create_stream_evtchannels(struct xen_drv_vsnd_info *drv_info,
 
 	drv_info->evt_channel = devm_kzalloc(&drv_info->xen_bus_dev->dev,
 			num_streams *
-			sizeof(struct xen_vsndif_event_channel), GFP_KERNEL);
+			sizeof(struct xen_vsndif_event_channel_info), GFP_KERNEL);
 	if (!drv_info->evt_channel) {
 		ret = -ENOMEM;
 		goto fail;
