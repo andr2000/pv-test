@@ -89,8 +89,8 @@ struct snd_dev_pcm_stream_info {
 	bool is_open;
 	uint8_t req_next_id;
 	snd_pcm_uframes_t pos;
-	/* number of bytes behind the current buffer page */
-	snd_pcm_uframes_t cross_boundary_cnt;
+	/* set if during copy we crossed the buffer boundary */
+	bool has_crossed_boundary;
 };
 
 struct snd_dev_pcm_instance_info {
@@ -350,7 +350,7 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 	stream->evt_channel = &xen_drv_info->evt_channel[stream->index];
 	stream->evt_channel->state = VSNDIF_STATE_CONNECTED;
 	stream->pos = 0;
-	stream->cross_boundary_cnt = 0;
+	stream->has_crossed_boundary = false;
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 	return 0;
 }
@@ -445,13 +445,12 @@ int snd_drv_pcm_prepare(struct snd_pcm_substream *substream)
 int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	LOG0("Substream is %s direction %d number %d stream idx %d", substream->name,
-			substream->stream, substream->number, stream->index);
+	LOG0("Substream is %s direction %d number %d stream idx %d cmd %d", substream->name,
+			substream->stream, substream->number, stream->index, cmd);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 		/* fall through */
 	case SNDRV_PCM_TRIGGER_RESUME:
-		/* do something to start the PCM engine */
 		substream->runtime->stop_threshold =
 				substream->runtime->buffer_size + 1;
 		break;
@@ -462,15 +461,30 @@ int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 				substream->runtime->buffer_size;
 		break;
 	default:
-		return -EINVAL;
+		break;
 	}
 	return 0;
 }
 
 snd_pcm_uframes_t snd_drv_pcm_playback_pointer(struct snd_pcm_substream *substream)
 {
-	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
-	return 0;
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	snd_pcm_uframes_t hw_ptr_base;
+
+	LOG0("Substream is %s direction %d number %d stream idx %d", substream->name,
+			substream->stream, substream->number, stream->index);
+	if (stream->has_crossed_boundary) {
+		hw_ptr_base = substream->runtime->hw_ptr_base;
+		hw_ptr_base += substream->runtime->buffer_size;
+		if (hw_ptr_base >= substream->runtime->boundary) {
+			hw_ptr_base = 0;
+		}
+		substream->runtime->hw_ptr_base = hw_ptr_base;
+		stream->has_crossed_boundary = 0;
+		LOG0("Set hw_ptr_base to %lu", substream->runtime->hw_ptr_base);
+	}
+	LOG0("Return pos %lu", stream->pos);
+	return stream->pos;
 }
 
 snd_pcm_uframes_t snd_drv_pcm_capture_pointer(struct snd_pcm_substream *substream)
@@ -522,13 +536,18 @@ int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	snd_pcm_uframes_t new_pos;
 	ssize_t len;
 
 	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
 			substream->name, channel, pos, count,
 			stream->index, stream->evt_channel->port);
-	stream->pos = (stream->pos + count) % runtime->buffer_size;
-	stream->cross_boundary_cnt = count / runtime->buffer_size;
+	new_pos = stream->pos + count;
+	stream->pos = new_pos % runtime->buffer_size;
+	stream->has_crossed_boundary = new_pos / runtime->buffer_size;
+
+	LOG0("pos %lu buffer_size %lu has_crossed_boundary %d",
+			stream->pos, runtime->buffer_size, stream->has_crossed_boundary);
 	len = frames_to_bytes(runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
 	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
@@ -557,7 +576,7 @@ int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channe
 			substream->name, channel, pos, count,
 			stream->index, stream->evt_channel->port);
 	stream->pos = (stream->pos + count) % runtime->buffer_size;
-	stream->cross_boundary_cnt = count / runtime->buffer_size;
+	stream->has_crossed_boundary = count / runtime->buffer_size;
 	len = frames_to_bytes(runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
 	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
@@ -568,7 +587,8 @@ int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channe
 }
 
 /* defaults */
-#define MAX_BUFFER_SIZE		(4*1024)
+/* TODO: use XC_PAGE_SIZE */
+#define MAX_BUFFER_SIZE		(XENSND_MAX_PAGES_PER_REQUEST * PAGE_SIZE)
 #define MIN_PERIOD_SIZE		64
 #define MAX_PERIOD_SIZE		MAX_BUFFER_SIZE
 #define USE_FORMATS 		(SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S16_LE)
@@ -578,7 +598,7 @@ int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channe
 #define USE_CHANNELS_MIN 	1
 #define USE_CHANNELS_MAX 	2
 #define USE_PERIODS_MIN 	1
-#define USE_PERIODS_MAX 	1024
+#define USE_PERIODS_MAX 	(MAX_BUFFER_SIZE / MIN_PERIOD_SIZE)
 
 static struct snd_pcm_hardware snd_drv_pcm_hardware = {
 		.info =			(SNDRV_PCM_INFO_MMAP |
