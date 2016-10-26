@@ -272,6 +272,10 @@ int snd_drv_stream_open(struct snd_pcm_substream *substream,
 	req->u.data.op.open.format = alsa_to_sndif_format(runtime->format);
 	req->u.data.op.open.channels = runtime->channels;
 	req->u.data.op.open.rate = runtime->rate;
+	memcpy(&req->u.data.op.open.grefs, &stream->grefs,
+			sizeof(req->u.data.op.open.grefs) + BUILD_BUG_ON_ZERO(
+				ARRAY_SIZE(req->u.data.op.open.grefs) !=
+				ARRAY_SIZE(stream->grefs)));
 
 	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
 
@@ -513,11 +517,7 @@ int snd_drv_pcm_playback_copy_internal(struct snd_pcm_substream *substream,
 	}
 
 	req = snd_drv_stream_prepare_req(stream, XENSND_OP_WRITE);
-	req->u.data.op.write.len = len + BUILD_BUG_ON_ZERO(
-			ARRAY_SIZE(req->u.data.op.write.grefs) !=
-			ARRAY_SIZE(stream->grefs));
-	memcpy(&req->u.data.op.write.grefs, &stream->grefs,
-			sizeof(req->u.data.op.write.grefs));
+	req->u.data.op.write.len = len;
 
 	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
 
