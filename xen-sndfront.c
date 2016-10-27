@@ -584,27 +584,20 @@ int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	return 0;
 }
 
-snd_pcm_uframes_t snd_drv_pcm_playback_pointer(struct snd_pcm_substream *substream)
+snd_pcm_uframes_t snd_drv_pcm_pointer(struct snd_pcm_substream *substream)
 {
 	snd_pcm_uframes_t pos = snd_drv_pcm_timer_pointer(substream);
 	LOG0("hw_ptr_base %lu pos %lu", substream->runtime->hw_ptr_base, pos);
 	return pos;
 }
 
-snd_pcm_uframes_t snd_drv_pcm_capture_pointer(struct snd_pcm_substream *substream)
-{
-	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
-	return 0;
-}
-
-int snd_drv_pcm_playback_copy_internal(struct snd_pcm_substream *substream,
-		void *buf, snd_pcm_uframes_t len)
+int snd_drv_pcm_do_io(struct snd_pcm_substream *substream,
+		struct xensnd_req *req)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
 	struct snd_dev_pcm_instance_info *pcm_instance =
 				snd_pcm_substream_chip(substream);
 	struct xen_drv_vsnd_info *xen_drv_info;
-	struct xensnd_req *req;
 	unsigned long flags;
 	int ret;
 
@@ -616,9 +609,6 @@ int snd_drv_pcm_playback_copy_internal(struct snd_pcm_substream *substream,
 		return -EIO;
 	}
 
-	req = snd_drv_stream_prepare_req(stream, XENSND_OP_WRITE);
-	req->u.data.op.write.len = len;
-
 	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
 
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
@@ -628,6 +618,17 @@ int snd_drv_pcm_playback_copy_internal(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		return ret;
 	return sndif_to_kern_error(stream->evt_channel->resp_status);
+}
+
+int snd_drv_pcm_playback_do_write(struct snd_pcm_substream *substream,
+		snd_pcm_uframes_t len)
+{
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct xensnd_req *req;
+
+	req = snd_drv_stream_prepare_req(stream, XENSND_OP_WRITE);
+	req->u.data.op.write.len = len;
+	return snd_drv_pcm_do_io(substream, req);
 }
 
 int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
@@ -647,15 +648,40 @@ int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
 		return -EFAULT;
 	if (copy_from_user(stream->vbuffer, buf, len))
 		return -EFAULT;
-	return snd_drv_pcm_playback_copy_internal(substream, stream->vbuffer, len);
+	return snd_drv_pcm_playback_do_write(substream, len);
+}
+
+int snd_drv_pcm_capture_do_read(struct snd_pcm_substream *substream,
+		snd_pcm_uframes_t len)
+{
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct xensnd_req *req;
+
+	req = snd_drv_stream_prepare_req(stream, XENSND_OP_READ);
+	req->u.data.op.read.len = len;
+	return snd_drv_pcm_do_io(substream, req);
 }
 
 int snd_drv_pcm_capture_copy(struct snd_pcm_substream *substream, int channel,
 		snd_pcm_uframes_t pos,
 		void __user *buf, snd_pcm_uframes_t count)
 {
-	LOG0("TODO: mutex_lock/unlock: Substream is %s channel %d pos %lu count %lu", substream->name, channel, pos, count);
-	return 0;
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	int ret;
+	ssize_t len;
+
+	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
+			substream->name, channel, pos, count,
+			stream->index, stream->evt_channel->port);
+	len = frames_to_bytes(runtime, count);
+	/* TODO: use XC_PAGE_SIZE */
+	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
+		return -EFAULT;
+	ret = snd_drv_pcm_capture_do_read(substream, len);
+	if (ret < 0)
+		return ret;
+	return copy_to_user(buf, stream->vbuffer, len);
 }
 
 int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channel,
@@ -674,7 +700,7 @@ int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channe
 		return -EFAULT;
 	if (memset(stream->vbuffer, 0, len))
 		return -EFAULT;
-	return snd_drv_pcm_playback_copy_internal(substream, stream->vbuffer, len);
+	return snd_drv_pcm_playback_do_write(substream, len);
 }
 
 /* defaults */
@@ -719,7 +745,7 @@ static struct snd_pcm_ops snd_drv_pcm_playback_ops = {
 		.hw_free =	snd_drv_pcm_hw_free,
 		.prepare =	snd_drv_pcm_prepare,
 		.trigger =	snd_drv_pcm_trigger,
-		.pointer =	snd_drv_pcm_playback_pointer,
+		.pointer =	snd_drv_pcm_pointer,
 		.copy =		snd_drv_pcm_playback_copy,
 		.silence =	snd_drv_pcm_playback_silence,
 };
@@ -732,7 +758,7 @@ static struct snd_pcm_ops snd_drv_pcm_capture_ops = {
 		.hw_free =	snd_drv_pcm_hw_free,
 		.prepare =	snd_drv_pcm_prepare,
 		.trigger =	snd_drv_pcm_trigger,
-		.pointer =	snd_drv_pcm_capture_pointer,
+		.pointer =	snd_drv_pcm_pointer,
 		.copy =		snd_drv_pcm_capture_copy,
 };
 
