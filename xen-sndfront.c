@@ -434,7 +434,7 @@ int snd_drv_pcm_prepare(struct snd_pcm_substream *substream)
 	int ret;
 
 	LOG0("Substream is %s", substream->name);
-	/* ready to play/capture. N.B. this can be called multiple times, e.g.
+	/* TODO: ready to play/capture. This can be called multiple times, e.g.
 	 * after underruns etc, so have to close the active stream if any as
 	 * a recovery mechanism
 	 */
@@ -455,6 +455,17 @@ int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	case SNDRV_PCM_TRIGGER_START:
 		/* fall through */
 	case SNDRV_PCM_TRIGGER_RESUME:
+		/*
+		 * FIXME: as we may send data faster then the system expects,
+		 * make sure we are not underrunning from system's POV:
+		 * int snd_pcm_update_state(struct snd_pcm_substream *substream,
+			 struct snd_pcm_runtime *runtime)
+			...
+			if (avail >= runtime->stop_threshold) {
+				xrun(substream);
+				return -EPIPE;
+			}
+		 */
 		substream->runtime->stop_threshold =
 				substream->runtime->buffer_size + 1;
 		break;
@@ -477,6 +488,9 @@ snd_pcm_uframes_t snd_drv_pcm_playback_pointer(struct snd_pcm_substream *substre
 
 	LOG0("Substream is %s direction %d number %d stream idx %d", substream->name,
 			substream->stream, substream->number, stream->index);
+	/* FIXME: as we do not call snd_pcm_period_elapsed periodically
+	 * then we need to hack the pointer base
+	 */
 	if (stream->has_crossed_boundary) {
 		hw_ptr_base = substream->runtime->hw_ptr_base;
 		hw_ptr_base += substream->runtime->buffer_size;
