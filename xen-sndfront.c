@@ -80,6 +80,19 @@ struct xen_vsndif_event_channel_info {
 	int resp_status;
 };
 
+struct snd_drv_pcm_timer_info {
+	spinlock_t lock;
+	struct timer_list timer;
+	unsigned long base_time;
+	unsigned int frac_pos;	/* fractional sample position (based HZ) */
+	unsigned int frac_period_rest;
+	unsigned int frac_buffer_size;	/* buffer_size * HZ */
+	unsigned int frac_period_size;	/* period_size * HZ */
+	unsigned int rate;
+	int elapsed;
+	struct snd_pcm_substream *substream;
+};
+
 struct snd_dev_pcm_stream_info {
 	int index;
 	struct snd_pcm_hardware pcm_hw;
@@ -88,9 +101,7 @@ struct snd_dev_pcm_stream_info {
 	unsigned char *vbuffer;
 	bool is_open;
 	uint8_t req_next_id;
-	snd_pcm_uframes_t pos;
-	/* set if during copy we crossed the buffer boundary */
-	bool has_crossed_boundary;
+	struct snd_drv_pcm_timer_info dpcm;
 };
 
 struct snd_dev_pcm_instance_info {
@@ -192,9 +203,115 @@ static uint64_t alsa_to_sndif_format(snd_pcm_format_t format)
 	return format;
 }
 
+struct snd_dev_pcm_stream_info * snd_drv_stream_get(
+		struct snd_pcm_substream *substream);
+
 /*
  * Sound driver start
  */
+
+static void snd_drv_pcm_timer_rearm(struct snd_drv_pcm_timer_info *dpcm)
+{
+	mod_timer(&dpcm->timer, jiffies +
+		(dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate);
+}
+
+static void snd_drv_pcm_timer_update(struct snd_drv_pcm_timer_info *dpcm)
+{
+	unsigned long delta;
+
+	delta = jiffies - dpcm->base_time;
+	if (!delta)
+		return;
+	dpcm->base_time += delta;
+	delta *= dpcm->rate;
+	dpcm->frac_pos += delta;
+	while (dpcm->frac_pos >= dpcm->frac_buffer_size)
+		dpcm->frac_pos -= dpcm->frac_buffer_size;
+	while (dpcm->frac_period_rest <= delta) {
+		dpcm->elapsed++;
+		dpcm->frac_period_rest += dpcm->frac_period_size;
+	}
+	dpcm->frac_period_rest -= delta;
+}
+
+static int snd_drv_pcm_timer_start(struct snd_pcm_substream *substream)
+{
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	spin_lock(&dpcm->lock);
+	dpcm->base_time = jiffies;
+	snd_drv_pcm_timer_rearm(dpcm);
+	spin_unlock(&dpcm->lock);
+	return 0;
+}
+
+static int snd_drv_pcm_timer_stop(struct snd_pcm_substream *substream)
+{
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	spin_lock(&dpcm->lock);
+	del_timer(&dpcm->timer);
+	spin_unlock(&dpcm->lock);
+	return 0;
+}
+
+static int snd_drv_pcm_timer_prepare(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+
+	dpcm->frac_pos = 0;
+	dpcm->rate = runtime->rate;
+	dpcm->frac_buffer_size = runtime->buffer_size * HZ;
+	dpcm->frac_period_size = runtime->period_size * HZ;
+	dpcm->frac_period_rest = dpcm->frac_period_size;
+	dpcm->elapsed = 0;
+
+	return 0;
+}
+
+static void snd_drv_pcm_timer_callback(unsigned long data)
+{
+	struct snd_drv_pcm_timer_info *dpcm = (struct snd_drv_pcm_timer_info *)data;
+	unsigned long flags;
+	int elapsed = 0;
+
+	spin_lock_irqsave(&dpcm->lock, flags);
+	snd_drv_pcm_timer_update(dpcm);
+	snd_drv_pcm_timer_rearm(dpcm);
+	elapsed = dpcm->elapsed;
+	dpcm->elapsed = 0;
+	spin_unlock_irqrestore(&dpcm->lock, flags);
+	if (elapsed)
+		snd_pcm_period_elapsed(dpcm->substream);
+}
+
+static snd_pcm_uframes_t snd_drv_pcm_timer_pointer(
+		struct snd_pcm_substream *substream)
+{
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	snd_pcm_uframes_t pos;
+
+	spin_lock(&dpcm->lock);
+	snd_drv_pcm_timer_update(dpcm);
+	pos = dpcm->frac_pos / HZ;
+	spin_unlock(&dpcm->lock);
+	return pos;
+}
+
+static int snd_drv_pcm_timer_create(struct snd_pcm_substream *substream)
+{
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	setup_timer(&dpcm->timer, snd_drv_pcm_timer_callback,
+			(unsigned long) dpcm);
+	spin_lock_init(&dpcm->lock);
+	dpcm->substream = substream;
+	return 0;
+}
 
 static inline struct xensnd_req *snd_drv_stream_prepare_req(
 		struct snd_dev_pcm_stream_info *stream,
@@ -329,6 +446,7 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct xen_drv_vsnd_info *xen_drv_info;
+	int ret;
 	unsigned long flags;
 
 	LOG0("Substream is %s direction %d number %d stream idx %d", substream->name,
@@ -347,16 +465,18 @@ int snd_drv_pcm_open(struct snd_pcm_substream *substream)
 	runtime->hw.info |= SNDRV_PCM_INFO_INTERLEAVED;
 
 	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	ret = snd_drv_pcm_timer_create(substream);
 	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
 	stream->req_next_id = 0;
 	stream->is_open = false;
 	stream->vbuffer = NULL;
 	stream->evt_channel = &xen_drv_info->evt_channel[stream->index];
-	stream->evt_channel->state = VSNDIF_STATE_CONNECTED;
-	stream->pos = 0;
-	stream->has_crossed_boundary = false;
+	if (ret < 0)
+		stream->evt_channel->state = VSNDIF_STATE_DISCONNECTED;
+	else
+		stream->evt_channel->state = VSNDIF_STATE_CONNECTED;
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-	return 0;
+	return ret;
 }
 
 int snd_drv_pcm_close(struct snd_pcm_substream *substream)
@@ -369,6 +489,7 @@ int snd_drv_pcm_close(struct snd_pcm_substream *substream)
 
 	LOG0("TODO: mutex_lock/unlock: Substream is %s", substream->name);
 	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	snd_drv_pcm_timer_stop(substream);
 	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
 	stream->evt_channel->state = VSNDIF_STATE_DISCONNECTED;
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
@@ -443,7 +564,10 @@ int snd_drv_pcm_prepare(struct snd_pcm_substream *substream)
 		if (ret < 0)
 			return ret;
 	}
-	return snd_drv_stream_open(substream, stream);
+	ret = snd_drv_stream_open(substream, stream);
+	if (ret < 0)
+		return ret;
+	return snd_drv_pcm_timer_prepare(substream);
 }
 
 int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
@@ -455,26 +579,11 @@ int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	case SNDRV_PCM_TRIGGER_START:
 		/* fall through */
 	case SNDRV_PCM_TRIGGER_RESUME:
-		/*
-		 * FIXME: as we may send data faster then the system expects,
-		 * make sure we are not underrunning from system's POV:
-		 * int snd_pcm_update_state(struct snd_pcm_substream *substream,
-			 struct snd_pcm_runtime *runtime)
-			...
-			if (avail >= runtime->stop_threshold) {
-				xrun(substream);
-				return -EPIPE;
-			}
-		 */
-		substream->runtime->stop_threshold =
-				substream->runtime->buffer_size + 1;
-		break;
+		return snd_drv_pcm_timer_start(substream);
 	case SNDRV_PCM_TRIGGER_STOP:
 		/* fall through */
 	case SNDRV_PCM_TRIGGER_SUSPEND:
-		substream->runtime->stop_threshold =
-				substream->runtime->buffer_size;
-		break;
+		return snd_drv_pcm_timer_stop(substream);
 	default:
 		break;
 	}
@@ -483,26 +592,9 @@ int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 
 snd_pcm_uframes_t snd_drv_pcm_playback_pointer(struct snd_pcm_substream *substream)
 {
-	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	snd_pcm_uframes_t hw_ptr_base;
-
-	LOG0("Substream is %s direction %d number %d stream idx %d", substream->name,
-			substream->stream, substream->number, stream->index);
-	/* FIXME: as we do not call snd_pcm_period_elapsed periodically
-	 * then we need to hack the pointer base
-	 */
-	if (stream->has_crossed_boundary) {
-		hw_ptr_base = substream->runtime->hw_ptr_base;
-		hw_ptr_base += substream->runtime->buffer_size;
-		if (hw_ptr_base >= substream->runtime->boundary) {
-			hw_ptr_base = 0;
-		}
-		substream->runtime->hw_ptr_base = hw_ptr_base;
-		stream->has_crossed_boundary = 0;
-		LOG0("Set hw_ptr_base to %lu", substream->runtime->hw_ptr_base);
-	}
-	LOG0("Return pos %lu", stream->pos);
-	return stream->pos;
+	snd_pcm_uframes_t pos = snd_drv_pcm_timer_pointer(substream);
+	LOG0("hw_ptr_base %lu pos %lu", substream->runtime->hw_ptr_base, pos);
+	return pos;
 }
 
 snd_pcm_uframes_t snd_drv_pcm_capture_pointer(struct snd_pcm_substream *substream)
@@ -550,18 +642,11 @@ int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	snd_pcm_uframes_t new_pos;
 	ssize_t len;
 
 	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
 			substream->name, channel, pos, count,
 			stream->index, stream->evt_channel->port);
-	new_pos = stream->pos + count;
-	stream->pos = new_pos % runtime->buffer_size;
-	stream->has_crossed_boundary = new_pos / runtime->buffer_size;
-
-	LOG0("pos %lu buffer_size %lu has_crossed_boundary %d",
-			stream->pos, runtime->buffer_size, stream->has_crossed_boundary);
 	len = frames_to_bytes(runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
 	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
@@ -589,8 +674,6 @@ int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channe
 	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
 			substream->name, channel, pos, count,
 			stream->index, stream->evt_channel->port);
-	stream->pos = (stream->pos + count) % runtime->buffer_size;
-	stream->has_crossed_boundary = count / runtime->buffer_size;
 	len = frames_to_bytes(runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
 	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
