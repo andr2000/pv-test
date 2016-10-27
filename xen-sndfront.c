@@ -552,22 +552,16 @@ int snd_drv_pcm_hw_free(struct snd_pcm_substream *substream)
 int snd_drv_pcm_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	int ret;
+	int ret = 0;
 
 	LOG0("Substream is %s", substream->name);
-	/* TODO: ready to play/capture. This can be called multiple times, e.g.
-	 * after underruns etc, so have to close the active stream if any as
-	 * a recovery mechanism
-	 */
-	if (stream->is_open) {
-		ret = snd_drv_stream_close(substream, stream);
+	if (!stream->is_open) {
+		ret = snd_drv_stream_open(substream, stream);
 		if (ret < 0)
 			return ret;
+		ret = snd_drv_pcm_timer_prepare(substream);
 	}
-	ret = snd_drv_stream_open(substream, stream);
-	if (ret < 0)
-		return ret;
-	return snd_drv_pcm_timer_prepare(substream);
+	return ret;
 }
 
 int snd_drv_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
