@@ -591,18 +591,16 @@ snd_pcm_uframes_t snd_drv_pcm_pointer(struct snd_pcm_substream *substream)
 	return pos;
 }
 
+/* CAUTION!!! Call this with the spin lock held.
+ * This function will release it
+ */
 int snd_drv_pcm_do_io(struct snd_pcm_substream *substream,
-		struct xensnd_req *req)
+		struct xen_drv_vsnd_info *xen_drv_info,
+		struct xensnd_req *req, unsigned long flags)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_dev_pcm_instance_info *pcm_instance =
-				snd_pcm_substream_chip(substream);
-	struct xen_drv_vsnd_info *xen_drv_info;
-	unsigned long flags;
 	int ret;
 
-	xen_drv_info = pcm_instance->card_info->xen_drv_info;
-	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
 	reinit_completion(&stream->evt_channel->completion);
 	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
 		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
@@ -624,11 +622,17 @@ int snd_drv_pcm_playback_do_write(struct snd_pcm_substream *substream,
 		snd_pcm_uframes_t len)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	struct snd_dev_pcm_instance_info *pcm_instance =
+				snd_pcm_substream_chip(substream);
+	struct xen_drv_vsnd_info *xen_drv_info;
 	struct xensnd_req *req;
+	unsigned long flags;
 
+	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
 	req = snd_drv_stream_prepare_req(stream, XENSND_OP_WRITE);
 	req->u.data.op.write.len = len;
-	return snd_drv_pcm_do_io(substream, req);
+	return snd_drv_pcm_do_io(substream, xen_drv_info, req, flags);
 }
 
 int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
@@ -636,13 +640,12 @@ int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
 		void __user *buf, snd_pcm_uframes_t count)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_pcm_runtime *runtime = substream->runtime;
 	ssize_t len;
 
 	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
 			substream->name, channel, pos, count,
 			stream->index, stream->evt_channel->port);
-	len = frames_to_bytes(runtime, count);
+	len = frames_to_bytes(substream->runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
 	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
 		return -EFAULT;
@@ -651,34 +654,31 @@ int snd_drv_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
 	return snd_drv_pcm_playback_do_write(substream, len);
 }
 
-int snd_drv_pcm_capture_do_read(struct snd_pcm_substream *substream,
-		snd_pcm_uframes_t len)
-{
-	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct xensnd_req *req;
-
-	req = snd_drv_stream_prepare_req(stream, XENSND_OP_READ);
-	req->u.data.op.read.len = len;
-	return snd_drv_pcm_do_io(substream, req);
-}
-
 int snd_drv_pcm_capture_copy(struct snd_pcm_substream *substream, int channel,
 		snd_pcm_uframes_t pos,
 		void __user *buf, snd_pcm_uframes_t count)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_dev_pcm_instance_info *pcm_instance =
+				snd_pcm_substream_chip(substream);
+	struct xen_drv_vsnd_info *xen_drv_info;
+	struct xensnd_req *req;
+	unsigned long flags;
 	int ret;
 	ssize_t len;
 
 	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
 			substream->name, channel, pos, count,
 			stream->index, stream->evt_channel->port);
-	len = frames_to_bytes(runtime, count);
+	len = frames_to_bytes(substream->runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
 	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
 		return -EFAULT;
-	ret = snd_drv_pcm_capture_do_read(substream, len);
+	xen_drv_info = pcm_instance->card_info->xen_drv_info;
+	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
+	req = snd_drv_stream_prepare_req(stream, XENSND_OP_READ);
+	req->u.data.op.read.len = len;
+	ret = snd_drv_pcm_do_io(substream, xen_drv_info, req, flags);
 	if (ret < 0)
 		return ret;
 	return copy_to_user(buf, stream->vbuffer, len);
@@ -688,13 +688,12 @@ int snd_drv_pcm_playback_silence(struct snd_pcm_substream *substream, int channe
 		snd_pcm_uframes_t pos, snd_pcm_uframes_t count)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_pcm_runtime *runtime = substream->runtime;
 	ssize_t len;
 
 	LOG0("Substream is %s channel %d pos %lu count %lu stream idx %d, port %d",
 			substream->name, channel, pos, count,
 			stream->index, stream->evt_channel->port);
-	len = frames_to_bytes(runtime, count);
+	len = frames_to_bytes(substream->runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
 	if (len > PAGE_SIZE * ARRAY_SIZE(stream->grefs))
 		return -EFAULT;
