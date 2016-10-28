@@ -80,7 +80,7 @@ struct xen_vsndif_event_channel_info {
 	int resp_status;
 };
 
-struct snd_drv_pcm_timer_info {
+struct snd_dev_pcm_timer_info {
 	spinlock_t lock;
 	struct timer_list timer;
 	unsigned long base_time;
@@ -101,7 +101,7 @@ struct snd_dev_pcm_stream_info {
 	unsigned char *vbuffer;
 	bool is_open;
 	uint8_t req_next_id;
-	struct snd_drv_pcm_timer_info dpcm;
+	struct snd_dev_pcm_timer_info dpcm;
 };
 
 struct snd_dev_pcm_instance_info {
@@ -210,13 +210,13 @@ struct snd_dev_pcm_stream_info * snd_drv_stream_get(
  * Sound driver start
  */
 
-static void snd_drv_pcm_timer_rearm(struct snd_drv_pcm_timer_info *dpcm)
+static void snd_drv_pcm_timer_rearm(struct snd_dev_pcm_timer_info *dpcm)
 {
 	mod_timer(&dpcm->timer, jiffies +
 		(dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate);
 }
 
-static void snd_drv_pcm_timer_update(struct snd_drv_pcm_timer_info *dpcm)
+static void snd_drv_pcm_timer_update(struct snd_dev_pcm_timer_info *dpcm)
 {
 	unsigned long delta;
 
@@ -238,7 +238,7 @@ static void snd_drv_pcm_timer_update(struct snd_drv_pcm_timer_info *dpcm)
 static int snd_drv_pcm_timer_start(struct snd_pcm_substream *substream)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	struct snd_dev_pcm_timer_info *dpcm = &stream->dpcm;
 	spin_lock(&dpcm->lock);
 	dpcm->base_time = jiffies;
 	snd_drv_pcm_timer_rearm(dpcm);
@@ -249,7 +249,7 @@ static int snd_drv_pcm_timer_start(struct snd_pcm_substream *substream)
 static int snd_drv_pcm_timer_stop(struct snd_pcm_substream *substream)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	struct snd_dev_pcm_timer_info *dpcm = &stream->dpcm;
 	spin_lock(&dpcm->lock);
 	del_timer(&dpcm->timer);
 	spin_unlock(&dpcm->lock);
@@ -260,7 +260,7 @@ static int snd_drv_pcm_timer_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	struct snd_dev_pcm_timer_info *dpcm = &stream->dpcm;
 
 	dpcm->frac_pos = 0;
 	dpcm->rate = runtime->rate;
@@ -274,7 +274,7 @@ static int snd_drv_pcm_timer_prepare(struct snd_pcm_substream *substream)
 
 static void snd_drv_pcm_timer_callback(unsigned long data)
 {
-	struct snd_drv_pcm_timer_info *dpcm = (struct snd_drv_pcm_timer_info *)data;
+	struct snd_dev_pcm_timer_info *dpcm = (struct snd_dev_pcm_timer_info *)data;
 	unsigned long flags;
 	int elapsed = 0;
 
@@ -292,7 +292,7 @@ static snd_pcm_uframes_t snd_drv_pcm_timer_pointer(
 		struct snd_pcm_substream *substream)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	struct snd_dev_pcm_timer_info *dpcm = &stream->dpcm;
 	snd_pcm_uframes_t pos;
 
 	spin_lock(&dpcm->lock);
@@ -305,7 +305,7 @@ static snd_pcm_uframes_t snd_drv_pcm_timer_pointer(
 static int snd_drv_pcm_timer_create(struct snd_pcm_substream *substream)
 {
 	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	struct snd_drv_pcm_timer_info *dpcm = &stream->dpcm;
+	struct snd_dev_pcm_timer_info *dpcm = &stream->dpcm;
 	setup_timer(&dpcm->timer, snd_drv_pcm_timer_callback,
 			(unsigned long) dpcm);
 	spin_lock_init(&dpcm->lock);
