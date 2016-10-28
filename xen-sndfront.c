@@ -365,6 +365,33 @@ void snd_drv_stream_free(struct snd_dev_pcm_stream_info *stream)
 	stream->req_next_id = 0;
 }
 
+/* CAUTION!!! Call this with the spin lock held.
+ * This function will release it
+ */
+int snd_drv_pcm_do_io(struct snd_pcm_substream *substream,
+		struct xen_drv_vsnd_info *xen_drv_info,
+		struct xensnd_req *req, unsigned long flags)
+{
+	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
+	int ret;
+
+	reinit_completion(&stream->evt_channel->completion);
+	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
+		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+		return -EIO;
+	}
+
+	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
+
+	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
+
+	ret = snd_drv_stream_wait_resp(stream);
+	LOG0("Got response ret %d", ret);
+	if (ret < 0)
+		return ret;
+	return sndif_to_kern_error(stream->evt_channel->resp_status);
+}
+
 int snd_drv_stream_open(struct snd_pcm_substream *substream,
 		struct snd_dev_pcm_stream_info *stream)
 {
@@ -379,11 +406,6 @@ int snd_drv_stream_open(struct snd_pcm_substream *substream,
 	LOG0("Opening stream idx %d evt port %u", stream->index, stream->evt_channel->port);
 	xen_drv_info = pcm_instance->card_info->xen_drv_info;
 	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
-	reinit_completion(&stream->evt_channel->completion);
-	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
-		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-		return -EIO;
-	}
 
 	req = snd_drv_stream_prepare_req(stream, XENSND_OP_OPEN);
 	req->u.data.op.open.format = alsa_to_sndif_format(runtime->format);
@@ -393,17 +415,9 @@ int snd_drv_stream_open(struct snd_pcm_substream *substream,
 			sizeof(req->u.data.op.open.grefs) + BUILD_BUG_ON_ZERO(
 				ARRAY_SIZE(req->u.data.op.open.grefs) !=
 				ARRAY_SIZE(stream->grefs)));
-
-	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
-
-	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-
-	ret = snd_drv_stream_wait_resp(stream);
-	LOG0("Got response ret %d", ret);
-	if (ret < 0)
-		return ret;
-	stream->is_open = true;
-	return sndif_to_kern_error(stream->evt_channel->resp_status);
+	ret = snd_drv_pcm_do_io(substream, xen_drv_info, req, flags);
+	stream->is_open = ret < 0 ? false : true;
+	return ret;
 }
 
 int snd_drv_stream_close(struct snd_pcm_substream *substream,
@@ -419,24 +433,11 @@ int snd_drv_stream_close(struct snd_pcm_substream *substream,
 	LOG0("Closing stream idx %d", stream->index);
 	xen_drv_info = pcm_instance->card_info->xen_drv_info;
 	spin_lock_irqsave(&xen_drv_info->io_lock, flags);
-	reinit_completion(&stream->evt_channel->completion);
-	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
-		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-		return -EIO;
-	}
 
 	req = snd_drv_stream_prepare_req(stream, XENSND_OP_CLOSE);
-
-	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
-
-	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-
-	ret = snd_drv_stream_wait_resp(stream);
-	LOG0("Got response ret %d", ret);
-	if (ret < 0)
-		return ret;
+	ret = snd_drv_pcm_do_io(substream, xen_drv_info, req, flags);
 	stream->is_open = false;
-	return sndif_to_kern_error(stream->evt_channel->resp_status);
+	return ret;
 }
 
 int snd_drv_pcm_open(struct snd_pcm_substream *substream)
@@ -589,33 +590,6 @@ snd_pcm_uframes_t snd_drv_pcm_pointer(struct snd_pcm_substream *substream)
 	snd_pcm_uframes_t pos = snd_drv_pcm_timer_pointer(substream);
 	LOG0("hw_ptr_base %lu pos %lu", substream->runtime->hw_ptr_base, pos);
 	return pos;
-}
-
-/* CAUTION!!! Call this with the spin lock held.
- * This function will release it
- */
-int snd_drv_pcm_do_io(struct snd_pcm_substream *substream,
-		struct xen_drv_vsnd_info *xen_drv_info,
-		struct xensnd_req *req, unsigned long flags)
-{
-	struct snd_dev_pcm_stream_info *stream = snd_drv_stream_get(substream);
-	int ret;
-
-	reinit_completion(&stream->evt_channel->completion);
-	if (unlikely(stream->evt_channel->state != VSNDIF_STATE_CONNECTED)) {
-		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-		return -EIO;
-	}
-
-	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
-
-	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-
-	ret = snd_drv_stream_wait_resp(stream);
-	LOG0("Got response ret %d", ret);
-	if (ret < 0)
-		return ret;
-	return sndif_to_kern_error(stream->evt_channel->resp_status);
 }
 
 int snd_drv_pcm_playback_do_write(struct snd_pcm_substream *substream,
