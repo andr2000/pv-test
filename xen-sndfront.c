@@ -76,8 +76,9 @@ struct xen_vsndif_event_channel_info {
 	struct completion completion;
 	/* state of the event channel */
 	enum vsndif_state state;
-	/* latest response status */
+	/* latest response status and id */
 	int resp_status;
+	uint8_t resp_id;
 };
 
 struct snd_dev_pcm_timer_info {
@@ -324,6 +325,7 @@ static inline struct xensnd_req *snd_drv_stream_prepare_req(
 	req->u.data.operation = operation;
 	req->u.data.stream_idx = stream->index;
 	req->u.data.id = stream->req_next_id++;
+	stream->evt_channel->resp_id = req->u.data.id;
 	return req;
 }
 
@@ -1158,7 +1160,13 @@ static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 
 	for (i = channel->ring.rsp_cons; i != rp; i++) {
 		resp = (struct xensnd_resp *)RING_GET_RESPONSE(&channel->ring, i);
-		LOG0("Got response");
+		LOG0("Got response %d", resp->u.data.operation);
+		if (resp->u.data.id != channel->resp_id) {
+			LOG0("Dropping operation %d with id %d on stream %d with status %d",
+					resp->u.data.operation, resp->u.data.id,
+					resp->u.data.stream_idx, resp->u.data.status);
+			continue;
+		}
 		switch (resp->u.data.operation) {
 		case XENSND_OP_OPEN:
 		case XENSND_OP_CLOSE:
