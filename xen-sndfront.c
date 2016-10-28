@@ -320,7 +320,7 @@ static inline struct xensnd_req *snd_drv_stream_prepare_req(
 {
 	struct xensnd_req *req;
 
-	req = (struct xensnd_req *)RING_GET_REQUEST(&stream->evt_channel->ring,
+	req = RING_GET_REQUEST(&stream->evt_channel->ring,
 			stream->evt_channel->ring.req_prod_pvt);
 	req->u.data.operation = operation;
 	req->u.data.stream_idx = stream->index;
@@ -1159,7 +1159,7 @@ static irqreturn_t xen_drv_vsnd_stream_ring_interrupt(int irq, void *dev_id)
 	rmb(); /* Ensure we see queued responses up to 'rp'. */
 
 	for (i = channel->ring.rsp_cons; i != rp; i++) {
-		resp = (struct xensnd_resp *)RING_GET_RESPONSE(&channel->ring, i);
+		resp = RING_GET_RESPONSE(&channel->ring, i);
 		LOG0("Got response %d", resp->u.data.operation);
 		if (resp->u.data.id != channel->resp_id) {
 			LOG0("Dropping operation %d with id %d on stream %d with status %d",
