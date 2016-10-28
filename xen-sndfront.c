@@ -327,14 +327,6 @@ static inline struct xensnd_req *snd_drv_stream_prepare_req(
 	return req;
 }
 
-static inline int snd_drv_stream_wait_resp(struct snd_dev_pcm_stream_info *stream)
-{
-	if (wait_for_completion_interruptible_timeout(&stream->evt_channel->completion,
-			msecs_to_jiffies(VSND_WAIT_BACK_MS)) <= 0)
-		return -ETIMEDOUT;
-	return 0;
-}
-
 struct snd_dev_pcm_stream_info * snd_drv_stream_get(
 		struct snd_pcm_substream *substream)
 {
@@ -380,12 +372,12 @@ int snd_drv_pcm_do_io(struct snd_pcm_substream *substream,
 		spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
 		return -EIO;
 	}
-
 	xen_drv_vsnd_stream_ring_flush(stream->evt_channel);
-
 	spin_unlock_irqrestore(&xen_drv_info->io_lock, flags);
-
-	ret = snd_drv_stream_wait_resp(stream);
+	ret = 0;
+	if (wait_for_completion_interruptible_timeout(&stream->evt_channel->completion,
+			msecs_to_jiffies(VSND_WAIT_BACK_MS)) <= 0)
+		ret = -ETIMEDOUT;
 	LOG0("Got response ret %d", ret);
 	if (ret < 0)
 		return ret;
