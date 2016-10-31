@@ -1722,6 +1722,7 @@ static int xdrv_remove(struct xenbus_device *dev)
 	mutex_lock(&drv_info->mutex);
 	xdrv_remove_internal(drv_info);
 	mutex_unlock(&drv_info->mutex);
+	xenbus_switch_state(dev, XenbusStateClosed);
 	return 0;
 }
 
@@ -1794,9 +1795,17 @@ static void xdrv_be_on_changed(struct xenbus_device *xb_dev,
 		/* fall through */
 	case XenbusStateReconfigured:
 		/* fall through */
-	case XenbusStateInitialising:
-		/* fall through */
 	case XenbusStateInitialised:
+		break;
+
+	case XenbusStateInitialising:
+		if (xb_dev->state == XenbusStateInitialising)
+			break;
+		/* recovering after backend unexpected closure */
+		mutex_lock(&drv_info->mutex);
+		xdrv_be_on_disconnected(drv_info);
+		mutex_unlock(&drv_info->mutex);
+		xenbus_switch_state(xb_dev, XenbusStateInitialising);
 		break;
 
 	case XenbusStateInitWait:
@@ -1831,6 +1840,8 @@ static void xdrv_be_on_changed(struct xenbus_device *xb_dev,
 	case XenbusStateClosed:
 		if (xb_dev->state == XenbusStateClosed)
 			break;
+		if (xb_dev->state == XenbusStateInitialising)
+			break;
 		/* Missed the backend's CLOSING state -- fallthrough */
 	case XenbusStateClosing:
 		/* FIXME: is this check needed? */
@@ -1839,7 +1850,7 @@ static void xdrv_be_on_changed(struct xenbus_device *xb_dev,
 		mutex_lock(&drv_info->mutex);
 		xdrv_be_on_disconnected(drv_info);
 		mutex_unlock(&drv_info->mutex);
-		xenbus_switch_state(xb_dev, XenbusStateClosed);
+		xenbus_switch_state(xb_dev, XenbusStateInitialising);
 		break;
 	}
 }
