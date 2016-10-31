@@ -183,24 +183,67 @@ static void sdrv_copy_pcm_hw(struct snd_pcm_hardware *dst,
 	struct snd_pcm_hardware *src,
 	struct snd_pcm_hardware *ref_pcm_hw);
 
+struct SNDIF_TO_KERN_ERROR {
+	int sndif;
+	int kern;
+};
+static struct SNDIF_TO_KERN_ERROR sndif_kern_error_codes[] = {
+	{ .sndif = XENSND_RSP_OKAY,     .kern = 0 },
+	{ .sndif = XENSND_RSP_ERROR,    .kern = EIO },
+};
+
 static int sndif_to_kern_error(int sndif_err)
 {
-	switch (sndif_err) {
-	case XENSND_RSP_OKAY:
-		return 0;
-	case XENSND_RSP_ERROR:
-		return -EIO;
-	default:
-		LOG0("Unsupported error code: %d", sndif_err);
-		dump_stack();
-		break;
-	}
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(sndif_kern_error_codes); i++)
+		if (sndif_kern_error_codes[i].sndif == sndif_err)
+			return -sndif_kern_error_codes[i].kern;
 	return -EIO;
 }
 
-static uint64_t alsa_to_sndif_format(snd_pcm_format_t format)
+struct ALSA_SNDIF_SAMPLE_FORMAT {
+	uint8_t sndif;
+	snd_pcm_format_t alsa;
+};
+static struct ALSA_SNDIF_SAMPLE_FORMAT alsa_sndif_formats[] = {
+	{ .sndif = XENSND_PCM_FORMAT_U8,                 .alsa = SNDRV_PCM_FORMAT_S8 },
+	{ .sndif = XENSND_PCM_FORMAT_S8,                 .alsa = SNDRV_PCM_FORMAT_S8 },
+	{ .sndif = XENSND_PCM_FORMAT_U16_LE,             .alsa = SNDRV_PCM_FORMAT_U16_LE },
+	{ .sndif = XENSND_PCM_FORMAT_U16_BE,             .alsa = SNDRV_PCM_FORMAT_U16_BE },
+	{ .sndif = XENSND_PCM_FORMAT_S16_LE,             .alsa = SNDRV_PCM_FORMAT_S16_LE },
+	{ .sndif = XENSND_PCM_FORMAT_S16_BE,             .alsa = SNDRV_PCM_FORMAT_S16_BE },
+	{ .sndif = XENSND_PCM_FORMAT_U24_LE,             .alsa = SNDRV_PCM_FORMAT_U24_LE },
+	{ .sndif = XENSND_PCM_FORMAT_U24_BE,             .alsa = SNDRV_PCM_FORMAT_U24_BE },
+	{ .sndif = XENSND_PCM_FORMAT_S24_LE,             .alsa = SNDRV_PCM_FORMAT_S24_LE },
+	{ .sndif = XENSND_PCM_FORMAT_S24_BE,             .alsa = SNDRV_PCM_FORMAT_S24_BE },
+	{ .sndif = XENSND_PCM_FORMAT_U32_LE,             .alsa = SNDRV_PCM_FORMAT_U32_LE },
+	{ .sndif = XENSND_PCM_FORMAT_U32_BE,             .alsa = SNDRV_PCM_FORMAT_U32_BE },
+	{ .sndif = XENSND_PCM_FORMAT_S32_LE,             .alsa = SNDRV_PCM_FORMAT_S32_LE },
+	{ .sndif = XENSND_PCM_FORMAT_S32_BE,             .alsa = SNDRV_PCM_FORMAT_S32_BE },
+	{ .sndif = XENSND_PCM_FORMAT_A_LAW,              .alsa = SNDRV_PCM_FORMAT_A_LAW },
+	{ .sndif = XENSND_PCM_FORMAT_MU_LAW,             .alsa = SNDRV_PCM_FORMAT_MU_LAW },
+	{ .sndif = XENSND_PCM_FORMAT_F32_LE,             .alsa = SNDRV_PCM_FORMAT_FLOAT_LE },
+	{ .sndif = XENSND_PCM_FORMAT_F32_BE,             .alsa = SNDRV_PCM_FORMAT_FLOAT_BE },
+	{ .sndif = XENSND_PCM_FORMAT_F64_LE,             .alsa = SNDRV_PCM_FORMAT_FLOAT64_LE },
+	{ .sndif = XENSND_PCM_FORMAT_F64_BE,             .alsa = SNDRV_PCM_FORMAT_FLOAT64_BE },
+	{ .sndif = XENSND_PCM_FORMAT_IEC958_SUBFRAME_LE, .alsa = SNDRV_PCM_FORMAT_IEC958_SUBFRAME_LE },
+	{ .sndif = XENSND_PCM_FORMAT_IEC958_SUBFRAME_BE, .alsa = SNDRV_PCM_FORMAT_IEC958_SUBFRAME_BE },
+	{ .sndif = XENSND_PCM_FORMAT_IMA_ADPCM,          .alsa = SNDRV_PCM_FORMAT_IMA_ADPCM },
+	{ .sndif = XENSND_PCM_FORMAT_MPEG,               .alsa = SNDRV_PCM_FORMAT_MPEG },
+	{ .sndif = XENSND_PCM_FORMAT_GSM,                .alsa = SNDRV_PCM_FORMAT_GSM },
+	{ .sndif = XENSND_PCM_FORMAT_SPECIAL,            .alsa = SNDRV_PCM_FORMAT_SPECIAL },
+};
+
+static uint8_t alsa_to_sndif_format(snd_pcm_format_t format)
 {
-	return format;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(alsa_sndif_formats); i++)
+		if (alsa_sndif_formats[i].alsa == format)
+			return alsa_sndif_formats[i].sndif;
+	LOG0("Cannot convert snd_pcm_format_t %u", format);
+	return XENSND_PCM_FORMAT_SPECIAL;
 }
 
 /*
