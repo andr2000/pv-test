@@ -898,11 +898,42 @@ static int sdrv_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int sdrv_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	struct sdev_card_info *info = card->private_data;
+	int i;
+
+	LOG0("Suspending Card %d", info->card->number);
+	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
+	for (i = 0; i < info->num_pcm_instances; i++)
+		snd_pcm_suspend_all(info->pcm_instances[i].pcm);
+	return 0;
+}
+
+static int sdrv_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	struct sdev_card_info *info = card->private_data;
+
+	LOG0("Resuming Card %d", info->card->number);
+	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
+	return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(sdrv_pm, sdrv_suspend, sdrv_resume);
+#define XENSND_PM_OPS	&sdrv_pm
+#else
+#define XENSND_PM_OPS	NULL
+#endif
+
 static struct platform_driver sdrv_info = {
 	.probe		= sdrv_probe,
 	.remove		= sdrv_remove,
 	.driver		= {
 		.name	= XENSND_DRIVER_NAME,
+		.pm	= XENSND_PM_OPS,
 	},
 };
 
@@ -1684,7 +1715,10 @@ static int xdrv_remove(struct xenbus_device *dev)
 
 static int xdrv_resume(struct xenbus_device *dev)
 {
-	LOG0();
+	struct xdrv_info *drv_info = dev_get_drvdata(&dev->dev);
+	LOG0("Resuming");
+	mutex_lock(&drv_info->mutex);
+	mutex_unlock(&drv_info->mutex);
 	return 0;
 }
 
