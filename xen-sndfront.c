@@ -1281,20 +1281,21 @@ static char **xdrv_cfg_get_num_nodes(const char *path, const char *node,
 struct CFG_HW_SAMPLE_RATE {
 	const char *name;
 	unsigned int mask;
+	unsigned int value;
 };
 static struct CFG_HW_SAMPLE_RATE xdrv_cfg_hw_supported_rates[] = {
-	{ .name = "5512",   .mask = SNDRV_PCM_RATE_5512 },
-	{ .name = "8000",   .mask = SNDRV_PCM_RATE_8000 },
-	{ .name = "11025",  .mask = SNDRV_PCM_RATE_11025 },
-	{ .name = "16000",  .mask = SNDRV_PCM_RATE_16000 },
-	{ .name = "22050",  .mask = SNDRV_PCM_RATE_22050 },
-	{ .name = "32000",  .mask = SNDRV_PCM_RATE_32000 },
-	{ .name = "44100",  .mask = SNDRV_PCM_RATE_44100 },
-	{ .name = "48000",  .mask = SNDRV_PCM_RATE_48000 },
-	{ .name = "64000",  .mask = SNDRV_PCM_RATE_64000 },
-	{ .name = "96000",  .mask = SNDRV_PCM_RATE_96000 },
-	{ .name = "176400", .mask = SNDRV_PCM_RATE_176400 },
-	{ .name = "192000", .mask = SNDRV_PCM_RATE_192000 },
+	{ .name = "5512",   .mask = SNDRV_PCM_RATE_5512,   .value = 5512 },
+	{ .name = "8000",   .mask = SNDRV_PCM_RATE_8000,   .value = 8000 },
+	{ .name = "11025",  .mask = SNDRV_PCM_RATE_11025,  .value = 11025 },
+	{ .name = "16000",  .mask = SNDRV_PCM_RATE_16000,  .value = 16000 },
+	{ .name = "22050",  .mask = SNDRV_PCM_RATE_22050,  .value = 22050 },
+	{ .name = "32000",  .mask = SNDRV_PCM_RATE_32000,  .value = 32000 },
+	{ .name = "44100",  .mask = SNDRV_PCM_RATE_44100,  .value = 44100 },
+	{ .name = "48000",  .mask = SNDRV_PCM_RATE_48000,  .value = 48000 },
+	{ .name = "64000",  .mask = SNDRV_PCM_RATE_64000,  .value = 64000 },
+	{ .name = "96000",  .mask = SNDRV_PCM_RATE_96000,  .value = 96000 },
+	{ .name = "176400", .mask = SNDRV_PCM_RATE_176400, .value = 176400 },
+	{ .name = "192000", .mask = SNDRV_PCM_RATE_192000, .value = 192000 },
 };
 
 struct CFG_HW_SAMPLE_FORMAT {
@@ -1334,6 +1335,7 @@ static void xdrv_cfg_hw_rates(char *list, unsigned int len,
 {
 	char *cur_rate;
 	unsigned int cur_mask;
+	unsigned int cur_value;
 	unsigned int rates;
 	unsigned int rate_min;
 	unsigned int rate_max;
@@ -1347,12 +1349,13 @@ static void xdrv_cfg_hw_rates(char *list, unsigned int len,
 		for (i = 0; i < ARRAY_SIZE(xdrv_cfg_hw_supported_rates); i++)
 			if (!strncasecmp(cur_rate, xdrv_cfg_hw_supported_rates[i].name,
 					XENSND_SAMPLE_RATE_MAX_LEN)) {
-				cur_mask =xdrv_cfg_hw_supported_rates[i].mask;
+				cur_mask = xdrv_cfg_hw_supported_rates[i].mask;
+				cur_value = xdrv_cfg_hw_supported_rates[i].value;
 				rates |= cur_mask;
-				if (rate_min > cur_mask)
-					rate_min = cur_mask;
-				if (rate_max < cur_mask)
-					rate_max = cur_mask;
+				if (rate_min > cur_value)
+					rate_min = cur_value;
+				if (rate_max < cur_value)
+					rate_max = cur_value;
 				LOG0("Found rate: %s", cur_rate);
 			}
 	}
