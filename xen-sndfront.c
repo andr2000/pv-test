@@ -639,6 +639,7 @@ int sdrv_alsa_playback_do_write(struct snd_pcm_substream *substream,
 	spin_lock_irqsave(&xdrv_info->io_lock, flags);
 	req = sdrv_be_stream_prepare_req(stream, XENSND_OP_WRITE);
 	req->u.data.op.write.len = len;
+	req->u.data.op.write.offset = 0;
 	return sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
 }
 
@@ -685,6 +686,7 @@ int sdrv_alsa_capture_copy(struct snd_pcm_substream *substream, int channel,
 	spin_lock_irqsave(&xdrv_info->io_lock, flags);
 	req = sdrv_be_stream_prepare_req(stream, XENSND_OP_READ);
 	req->u.data.op.read.len = len;
+	req->u.data.op.read.offset = 0;
 	ret = sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
 	if (ret < 0)
 		return ret;
