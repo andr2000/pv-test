@@ -1413,14 +1413,14 @@ static void xdrv_cfg_pcm_hw(const char *path,
 	}
 	list = xenbus_read(XBT_NIL, path, XENSND_FIELD_SAMPLE_RATES, &len);
 	if (!IS_ERR(list)) {
-		xdrv_cfg_hw_rates(list, len, path, pcm_hw);
 		LOG0("Sample rates: \"%s\"", list);
+		xdrv_cfg_hw_rates(list, len, path, pcm_hw);
 		kfree(list);
 	}
 	list = xenbus_read(XBT_NIL, path, XENSND_FIELD_SAMPLE_FORMATS, &len);
 	if (!IS_ERR(list)) {
-		xdrv_cfg_formats(list, len, path, pcm_hw);
 		LOG0("Sample formats: \"%s\"", list);
+		xdrv_cfg_formats(list, len, path, pcm_hw);
 		kfree(list);
 	}
 }
