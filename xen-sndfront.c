@@ -973,6 +973,8 @@ static void sdrv_copy_pcm_hw(struct snd_pcm_hardware *dst,
 		dst->channels_min = src->channels_min;
 	if (src->channels_max)
 		dst->channels_max = src->channels_max;
+	if (src->buffer_bytes_max)
+		dst->buffer_bytes_max = src->buffer_bytes_max;
 }
 
 static int sdrv_probe(struct platform_device *pdev)
@@ -1499,6 +1501,7 @@ static void xdrv_cfg_pcm_hw(const char *path,
 {
 	char *list;
 	int val;
+	size_t buf_sz;
 	unsigned int len;
 
 	*pcm_hw = *parent_pcm_hw;
@@ -1527,6 +1530,13 @@ static void xdrv_cfg_pcm_hw(const char *path,
 		LOG0("Sample formats: \"%s\"", list);
 		xdrv_cfg_formats(list, len, path, pcm_hw);
 		kfree(list);
+	}
+	if (xenbus_scanf(XBT_NIL, path, XENSND_FIELD_BUFFER_SIZE,
+			"%zu", &buf_sz) < 0)
+		buf_sz = 0;
+	if (buf_sz) {
+		pcm_hw->buffer_bytes_max = buf_sz;
+		LOG0("pcm_hw->buffer_bytes_max %zu", buf_sz);
 	}
 }
 
