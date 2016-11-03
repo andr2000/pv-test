@@ -81,6 +81,14 @@ struct xdrv_evtchnl_info {
 	uint8_t resp_id;
 };
 
+struct xdrv_shared_buffer_info {
+	int num_grefs;
+	grant_ref_t *grefs;
+	unsigned char *vdirectory;
+	unsigned char *vbuffer;
+	size_t vbuffer_sz;
+};
+
 struct sdev_alsa_timer_info {
 	spinlock_t lock;
 	struct timer_list timer;
@@ -98,14 +106,10 @@ struct sdev_pcm_stream_info {
 	int index;
 	struct snd_pcm_hardware pcm_hw;
 	struct xdrv_evtchnl_info *evtchnl;
-	int num_grefs;
-	grant_ref_t *grefs;
-	unsigned char *vdirectory;
-	unsigned char *vbuffer;
-	size_t vbuffer_sz;
 	bool is_open;
 	uint8_t req_next_id;
 	struct sdev_alsa_timer_info dpcm;
+	struct xdrv_shared_buffer_info sh_buf;
 };
 
 struct sdev_pcm_instance_info {
@@ -185,6 +189,11 @@ static inline void xdrv_evtchnl_flush(
 static void sdrv_copy_pcm_hw(struct snd_pcm_hardware *dst,
 	struct snd_pcm_hardware *src,
 	struct snd_pcm_hardware *ref_pcm_hw);
+void xdrv_sh_buf_clear(struct xdrv_shared_buffer_info *buf);
+void xdrv_sh_buf_free(struct xdrv_shared_buffer_info *buf);
+int xdrv_sh_buf_alloc(struct xenbus_device *xb_dev,
+	struct xdrv_shared_buffer_info *buf,
+	unsigned int buffer_size);
 
 struct SNDIF_TO_KERN_ERROR {
 	int sndif;
@@ -270,13 +279,9 @@ struct sdev_pcm_stream_info * sdrv_stream_get(
 
 static void sdrv_stream_clear(struct sdev_pcm_stream_info *stream)
 {
-	stream->num_grefs = 0;
-	stream->grefs = NULL;
-	stream->vdirectory = NULL;
-	stream->vbuffer = NULL;
-	stream->vbuffer_sz = 0;
 	stream->is_open = false;
 	stream->req_next_id = 0;
+	xdrv_sh_buf_clear(&stream->sh_buf);
 }
 
 static inline struct xensnd_req *sdrv_be_stream_prepare_req(
@@ -296,19 +301,7 @@ static inline struct xensnd_req *sdrv_be_stream_prepare_req(
 
 void sdrv_be_stream_free(struct sdev_pcm_stream_info *stream)
 {
-	int i;
-
-	if (stream->grefs) {
-		for (i = 0; i < stream->num_grefs; i++)
-			if (stream->grefs[i] != GRANT_INVALID_REF)
-				gnttab_end_foreign_access(stream->grefs[i],
-						0, 0UL);
-		kfree(stream->grefs);
-	}
-	if (stream->vdirectory)
-		vfree(stream->vdirectory);
-	if (stream->vbuffer)
-		vfree(stream->vbuffer);
+	xdrv_sh_buf_free(&stream->sh_buf);
 	sdrv_stream_clear(stream);
 }
 
@@ -358,7 +351,7 @@ int sdrv_be_stream_open(struct snd_pcm_substream *substream,
 	req->u.data.op.open.pcm_format = alsa_to_sndif_format(runtime->format);
 	req->u.data.op.open.pcm_channels = runtime->channels;
 	req->u.data.op.open.pcm_rate = runtime->rate;
-	req->u.data.op.open.gref_directory_start = stream->grefs[0];
+	req->u.data.op.open.gref_directory_start = stream->sh_buf.grefs[0];
 	ret = sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
 	stream->is_open = ret < 0 ? false : true;
 	return ret;
@@ -515,9 +508,8 @@ int sdrv_alsa_open(struct snd_pcm_substream *substream)
 	xdrv_info = pcm_instance->card_info->xdrv_info;
 	ret = sdrv_alsa_timer_create(substream);
 	spin_lock_irqsave(&xdrv_info->io_lock, flags);
-	stream->req_next_id = 0;
-	stream->is_open = false;
-	stream->vbuffer = NULL;
+	xdrv_sh_buf_clear(&stream->sh_buf);
+	sdrv_stream_clear(stream);
 	stream->evtchnl = &xdrv_info->evtchnls[stream->index];
 	if (ret < 0)
 		stream->evtchnl->state = EVTCHNL_STATE_DISCONNECTED;
@@ -544,130 +536,24 @@ int sdrv_alsa_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-int sdrv_alsa_alloc_buffers(struct sdev_pcm_stream_info *stream,
-		unsigned int buffer_size, int *npages_dir)
-{
-	grant_ref_t priv_gref_head;
-	int ret, i, j, cur_ref;
-	int num_pages_vbuffer, num_grefs_per_page, num_pages_dir, num_grefs;
-	int otherend_id;
-
-	/* TODO: use XC_PAGE_SIZE */
-	num_pages_vbuffer = DIV_ROUND_UP(buffer_size, PAGE_SIZE);
-	/* number of grefs a page can hold with respect to the
-	 * xensnd_page_directory header
-	 */
-	num_grefs_per_page = (PAGE_SIZE - sizeof(
-			struct xensnd_page_directory)) /
-			sizeof(grant_ref_t);
-	/* number of pages the directory itself consumes */
-	num_pages_dir = DIV_ROUND_UP(num_pages_vbuffer, num_grefs_per_page);
-	num_grefs = num_pages_vbuffer + num_pages_dir;
-
-	stream->grefs = kzalloc(num_grefs * sizeof(*stream->grefs), GFP_KERNEL);
-	if (!stream->grefs) {
-		ret = -ENOMEM;
-		goto fail;
-	}
-	ret = gnttab_alloc_grant_references(num_grefs, &priv_gref_head);
-	if (ret)
-		goto fail;
-	stream->num_grefs = num_grefs;
-
-	stream->vdirectory = vmalloc(num_pages_dir * PAGE_SIZE);
-	if (!stream->vdirectory) {
-		ret = -ENOMEM;
-		goto fail;
-	}
-	stream->vbuffer_sz = num_pages_vbuffer * PAGE_SIZE;
-	stream->vbuffer = vmalloc(stream->vbuffer_sz);
-	if (!stream->vbuffer) {
-		ret = -ENOMEM;
-		goto fail;
-	}
-
-	otherend_id = stream->evtchnl->drv_info->xb_dev->otherend_id;
-	j = 0;
-	for (i = 0; i < num_pages_dir; i++) {
-		cur_ref = gnttab_claim_grant_reference(&priv_gref_head);
-		if (cur_ref < 0) {
-			ret = cur_ref;
-			goto fail;
-		}
-		gnttab_grant_foreign_access_ref(cur_ref, otherend_id,
-			xen_page_to_gfn(vmalloc_to_page(stream->vdirectory +
-						PAGE_SIZE * i)), 0);
-		stream->grefs[j++] = cur_ref;
-	}
-	for (i = 0; i < num_pages_vbuffer; i++) {
-		cur_ref = gnttab_claim_grant_reference(&priv_gref_head);
-		if (cur_ref < 0) {
-			ret = cur_ref;
-			goto fail;
-		}
-		gnttab_grant_foreign_access_ref(cur_ref, otherend_id,
-			xen_page_to_gfn(vmalloc_to_page(stream->vbuffer +
-						PAGE_SIZE * i)), 0);
-		stream->grefs[j++] = cur_ref;
-	}
-	gnttab_free_grant_references(priv_gref_head);
-	*npages_dir = num_pages_dir;
-	ret = 0;
-fail:
-	return ret;
-}
-
-void sdrv_alsa_fill_page_dir(struct sdev_pcm_stream_info *stream,
-		int num_pages_dir)
-{
-	struct xensnd_page_directory *page_dir;
-	unsigned char *ptr;
-	int i, cur_gref, grefs_left, num_grefs_per_page, to_copy;
-
-	ptr = stream->vdirectory;
-	grefs_left = stream->num_grefs - num_pages_dir;
-	num_grefs_per_page = (PAGE_SIZE - sizeof(
-			struct xensnd_page_directory)) /
-			sizeof(grant_ref_t);
-	/* skip grefs at start, they are for pages granted for the directory */
-	cur_gref = num_pages_dir;
-	for (i = 0; i < num_pages_dir; i++) {
-		page_dir = (struct xensnd_page_directory *)ptr;
-		if (grefs_left <= num_grefs_per_page) {
-			to_copy = grefs_left;
-			page_dir->num_grefs = to_copy;
-			page_dir->gref_dir_next_page = GRANT_INVALID_REF;
-		} else {
-			to_copy = num_grefs_per_page;;
-			page_dir->num_grefs = to_copy;
-			page_dir->gref_dir_next_page = stream->grefs[i + 1];
-		}
-		memcpy(&page_dir->gref, &stream->grefs[cur_gref],
-				to_copy * sizeof(grant_ref_t));
-		ptr += PAGE_SIZE;
-		grefs_left -= to_copy;
-		cur_gref += to_copy;
-	}
-}
-
 int sdrv_alsa_hw_params(struct snd_pcm_substream *substream,
 		 struct snd_pcm_hw_params *params)
 {
 	struct sdev_pcm_stream_info *stream = sdrv_stream_get(substream);
-	int ret, num_pages_dir;
+	int ret;
 	unsigned int buffer_size;
 
 	buffer_size = params_buffer_bytes(params);
 	LOG0("Substream is %s, allocating buffers for idx %d, size %u",
 			substream->name, stream->index,
 			buffer_size);
+	xdrv_sh_buf_clear(&stream->sh_buf);
 	sdrv_stream_clear(stream);
 	/* number of pages needed for the runtime buffer */
-	ret = sdrv_alsa_alloc_buffers(stream, buffer_size,
-			&num_pages_dir);
+	ret = xdrv_sh_buf_alloc(stream->evtchnl->drv_info->xb_dev,
+		&stream->sh_buf, buffer_size);
 	if (ret < 0)
 		goto fail;
-	sdrv_alsa_fill_page_dir(stream, num_pages_dir);
 	LOG0("Allocated buffers for stream idx %d", stream->index);
 	return 0;
 
@@ -760,9 +646,9 @@ int sdrv_alsa_playback_copy(struct snd_pcm_substream *substream, int channel,
 			stream->index, stream->evtchnl->port);
 	len = frames_to_bytes(substream->runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
-	if (len > stream->vbuffer_sz)
+	if (len > stream->sh_buf.vbuffer_sz)
 		return -EFAULT;
-	if (copy_from_user(stream->vbuffer, buf, len))
+	if (copy_from_user(stream->sh_buf.vbuffer, buf, len))
 		return -EFAULT;
 	return sdrv_alsa_playback_do_write(substream, len);
 }
@@ -785,7 +671,7 @@ int sdrv_alsa_capture_copy(struct snd_pcm_substream *substream, int channel,
 			stream->index, stream->evtchnl->port);
 	len = frames_to_bytes(substream->runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
-	if (len > stream->vbuffer_sz)
+	if (len > stream->sh_buf.vbuffer_sz)
 		return -EFAULT;
 	xdrv_info = pcm_instance->card_info->xdrv_info;
 	spin_lock_irqsave(&xdrv_info->io_lock, flags);
@@ -795,7 +681,7 @@ int sdrv_alsa_capture_copy(struct snd_pcm_substream *substream, int channel,
 	ret = sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
 	if (ret < 0)
 		return ret;
-	return copy_to_user(buf, stream->vbuffer, len);
+	return copy_to_user(buf, stream->sh_buf.vbuffer, len);
 }
 
 int sdrv_alsa_playback_silence(struct snd_pcm_substream *substream, int channel,
@@ -809,9 +695,9 @@ int sdrv_alsa_playback_silence(struct snd_pcm_substream *substream, int channel,
 			stream->index, stream->evtchnl->port);
 	len = frames_to_bytes(substream->runtime, count);
 	/* TODO: use XC_PAGE_SIZE */
-	if (len > stream->vbuffer_sz)
+	if (len > stream->sh_buf.vbuffer_sz)
 		return -EFAULT;
-	if (memset(stream->vbuffer, 0, len))
+	if (memset(stream->sh_buf.vbuffer, 0, len))
 		return -EFAULT;
 	return sdrv_alsa_playback_do_write(substream, len);
 }
@@ -1852,6 +1738,140 @@ static int xdrv_resume(struct xenbus_device *dev)
 {
 	LOG0();
 	return 0;
+}
+
+void xdrv_sh_buf_clear(struct xdrv_shared_buffer_info *buf)
+{
+	buf->num_grefs = 0;
+	buf->grefs = NULL;
+	buf->vdirectory = NULL;
+	buf->vbuffer = NULL;
+	buf->vbuffer_sz = 0;
+}
+
+void xdrv_sh_buf_free(struct xdrv_shared_buffer_info *buf)
+{
+	int i;
+
+	if (buf->grefs) {
+		for (i = 0; i < buf->num_grefs; i++)
+			if (buf->grefs[i] != GRANT_INVALID_REF)
+				gnttab_end_foreign_access(buf->grefs[i],
+						0, 0UL);
+		kfree(buf->grefs);
+	}
+	if (buf->vdirectory)
+		vfree(buf->vdirectory);
+	if (buf->vbuffer)
+		vfree(buf->vbuffer);
+	xdrv_sh_buf_clear(buf);
+}
+
+void xdrv_sh_buf_fill_page_dir(struct xdrv_shared_buffer_info *buf,
+		int num_pages_dir)
+{
+	struct xensnd_page_directory *page_dir;
+	unsigned char *ptr;
+	int i, cur_gref, grefs_left, num_grefs_per_page, to_copy;
+
+	ptr = buf->vdirectory;
+	grefs_left = buf->num_grefs - num_pages_dir;
+	num_grefs_per_page = (PAGE_SIZE - sizeof(
+			struct xensnd_page_directory)) /
+			sizeof(grant_ref_t);
+	/* skip grefs at start, they are for pages granted for the directory */
+	cur_gref = num_pages_dir;
+	for (i = 0; i < num_pages_dir; i++) {
+		page_dir = (struct xensnd_page_directory *)ptr;
+		if (grefs_left <= num_grefs_per_page) {
+			to_copy = grefs_left;
+			page_dir->num_grefs = to_copy;
+			page_dir->gref_dir_next_page = GRANT_INVALID_REF;
+		} else {
+			to_copy = num_grefs_per_page;;
+			page_dir->num_grefs = to_copy;
+			page_dir->gref_dir_next_page = buf->grefs[i + 1];
+		}
+		memcpy(&page_dir->gref, &buf->grefs[cur_gref],
+				to_copy * sizeof(grant_ref_t));
+		ptr += PAGE_SIZE;
+		grefs_left -= to_copy;
+		cur_gref += to_copy;
+	}
+}
+
+int xdrv_sh_buf_alloc(struct xenbus_device *xb_dev,
+	struct xdrv_shared_buffer_info *buf,
+	unsigned int buffer_size)
+{
+	grant_ref_t priv_gref_head;
+	int ret, i, j, cur_ref;
+	int num_pages_vbuffer, num_grefs_per_page, num_pages_dir, num_grefs;
+	int otherend_id;
+
+	/* TODO: use XC_PAGE_SIZE */
+	num_pages_vbuffer = DIV_ROUND_UP(buffer_size, PAGE_SIZE);
+	/* number of grefs a page can hold with respect to the
+	 * xensnd_page_directory header
+	 */
+	num_grefs_per_page = (PAGE_SIZE - sizeof(
+			struct xensnd_page_directory)) /
+			sizeof(grant_ref_t);
+	/* number of pages the directory itself consumes */
+	num_pages_dir = DIV_ROUND_UP(num_pages_vbuffer, num_grefs_per_page);
+	num_grefs = num_pages_vbuffer + num_pages_dir;
+
+	buf->grefs = kzalloc(num_grefs * sizeof(*buf->grefs), GFP_KERNEL);
+	if (!buf->grefs) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	ret = gnttab_alloc_grant_references(num_grefs, &priv_gref_head);
+	if (ret)
+		goto fail;
+	buf->num_grefs = num_grefs;
+
+	buf->vdirectory = vmalloc(num_pages_dir * PAGE_SIZE);
+	if (!buf->vdirectory) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	buf->vbuffer_sz = num_pages_vbuffer * PAGE_SIZE;
+	buf->vbuffer = vmalloc(buf->vbuffer_sz);
+	if (!buf->vbuffer) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+
+	otherend_id = xb_dev->otherend_id;
+	j = 0;
+	for (i = 0; i < num_pages_dir; i++) {
+		cur_ref = gnttab_claim_grant_reference(&priv_gref_head);
+		if (cur_ref < 0) {
+			ret = cur_ref;
+			goto fail;
+		}
+		gnttab_grant_foreign_access_ref(cur_ref, otherend_id,
+			xen_page_to_gfn(vmalloc_to_page(buf->vdirectory +
+						PAGE_SIZE * i)), 0);
+		buf->grefs[j++] = cur_ref;
+	}
+	for (i = 0; i < num_pages_vbuffer; i++) {
+		cur_ref = gnttab_claim_grant_reference(&priv_gref_head);
+		if (cur_ref < 0) {
+			ret = cur_ref;
+			goto fail;
+		}
+		gnttab_grant_foreign_access_ref(cur_ref, otherend_id,
+			xen_page_to_gfn(vmalloc_to_page(buf->vbuffer +
+						PAGE_SIZE * i)), 0);
+		buf->grefs[j++] = cur_ref;
+	}
+	gnttab_free_grant_references(priv_gref_head);
+	xdrv_sh_buf_fill_page_dir(buf, num_pages_dir);
+	ret = 0;
+fail:
+	return ret;
 }
 
 static int xdrv_be_on_initwait(struct xdrv_info *drv_info)
