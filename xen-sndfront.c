@@ -818,18 +818,18 @@ int sdrv_alsa_playback_silence(struct snd_pcm_substream *substream, int channel,
 
 /* defaults */
 /* TODO: use XC_PAGE_SIZE */
-#define MAX_XEN_BUFFER_SIZE	(16 * PAGE_SIZE)
-#define MAX_BUFFER_SIZE		(MAX_XEN_BUFFER_SIZE * 2)
+#define MAX_XEN_BUFFER_SIZE	(64 * 1024)
+#define MAX_BUFFER_SIZE		MAX_XEN_BUFFER_SIZE
 #define MIN_PERIOD_SIZE		64
-#define MAX_PERIOD_SIZE		MAX_BUFFER_SIZE
+#define MAX_PERIOD_SIZE		(MAX_BUFFER_SIZE / 8)
 #define USE_FORMATS 		(SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S16_LE)
 #define USE_RATE		SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_48000
 #define USE_RATE_MIN		5500
 #define USE_RATE_MAX		48000
 #define USE_CHANNELS_MIN 	1
 #define USE_CHANNELS_MAX 	2
-#define USE_PERIODS_MIN 	1
-#define USE_PERIODS_MAX 	(MAX_BUFFER_SIZE / MIN_PERIOD_SIZE)
+#define USE_PERIODS_MIN 	2
+#define USE_PERIODS_MAX 	8
 
 static struct snd_pcm_hardware sdrv_pcm_hardware_def = {
 		.info =			(SNDRV_PCM_INFO_MMAP |
@@ -973,8 +973,11 @@ static void sdrv_copy_pcm_hw(struct snd_pcm_hardware *dst,
 		dst->channels_min = src->channels_min;
 	if (src->channels_max)
 		dst->channels_max = src->channels_max;
-	if (src->buffer_bytes_max)
+	if (src->buffer_bytes_max) {
 		dst->buffer_bytes_max = src->buffer_bytes_max;
+		dst->period_bytes_max = src->buffer_bytes_max /
+				src->periods_max;
+	}
 }
 
 static int sdrv_probe(struct platform_device *pdev)
@@ -1007,8 +1010,7 @@ static int sdrv_probe(struct platform_device *pdev)
 		goto fail;
 	card_info->num_pcm_instances = platdata->cfg_card.num_devices;
 
-	sdrv_copy_pcm_hw(&card_info->pcm_hw,
-		&platdata->cfg_card.pcm_hw, &sdrv_pcm_hardware_def);
+	card_info->pcm_hw = platdata->cfg_card.pcm_hw;
 
 	for (i = 0; i < platdata->cfg_card.num_devices; i++) {
 		ret = sdrv_new_pcm(card_info,
