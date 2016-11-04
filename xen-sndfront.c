@@ -539,7 +539,10 @@ int sdrv_alsa_close(struct snd_pcm_substream *substream)
 int sdrv_alsa_hw_params(struct snd_pcm_substream *substream,
 		 struct snd_pcm_hw_params *params)
 {
+	struct sdev_pcm_instance_info *pcm_instance =
+			snd_pcm_substream_chip(substream);
 	struct sdev_pcm_stream_info *stream = sdrv_stream_get(substream);
+	struct xdrv_info *xdrv_info;
 	int ret;
 	unsigned int buffer_size;
 
@@ -550,7 +553,8 @@ int sdrv_alsa_hw_params(struct snd_pcm_substream *substream,
 	xdrv_sh_buf_clear(&stream->sh_buf);
 	sdrv_stream_clear(stream);
 	/* number of pages needed for the runtime buffer */
-	ret = xdrv_sh_buf_alloc(stream->evtchnl->drv_info->xb_dev,
+	xdrv_info = pcm_instance->card_info->xdrv_info;
+	ret = xdrv_sh_buf_alloc(xdrv_info->xb_dev,
 		&stream->sh_buf, buffer_size);
 	if (ret < 0)
 		goto fail;
