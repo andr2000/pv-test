@@ -5,5 +5,4 @@
 5. Sound /proc entries support
 6. Documentation
 7. Move to the latest Xen release
-8. Rework logs
 9. Use transactions for XenStore read/write?
