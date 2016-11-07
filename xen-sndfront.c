@@ -1,6 +1,5 @@
 /*
  *  Xen para-virtual sound device
- *  Copyright (c) 2016, Oleksandr Andrushchenko
  *
  *  Based on sound/drivers/dummy.c
  *  Based on drivers/net/xen-netfront.c
@@ -16,6 +15,7 @@
  *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *   GNU General Public License for more details.
  *
+ * Copyright (C) 2016 EPAM Systems Inc.
  */
 
 #include <linux/kernel.h>
