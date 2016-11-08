@@ -53,8 +53,8 @@ struct xdrv_evtchnl_info {
 	struct xdrv_info *drv_info;
 	struct xen_sndif_front_ring ring;
 	int ring_ref;
-	unsigned int port;
-	unsigned int irq;
+	int port;
+	int irq;
 	struct completion completion;
 	/* state of the event channel */
 	enum xdrv_evtchnl_state state;
@@ -1149,8 +1149,8 @@ static int xdrv_evtchnl_alloc(struct xdrv_info *drv_info,
 	evt_channel->state = EVTCHNL_STATE_DISCONNECTED;
 	evt_channel->ring_ref = GRANT_INVALID_REF;
 	evt_channel->ring.sring = NULL;
-	evt_channel->port = -1;
-	evt_channel->irq = -1;
+	evt_channel->port = 0;
+	evt_channel->irq = 0;
 	sring = (struct xen_sndif_sring *)get_zeroed_page(
 		GFP_NOIO | __GFP_HIGH);
 	if (!sring) {
