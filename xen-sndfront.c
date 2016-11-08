@@ -1120,6 +1120,7 @@ static void xdrv_evtchnl_free(struct xdrv_info *drv_info,
 	if (channel->ring_ref != GRANT_INVALID_REF)
 		gnttab_end_foreign_access(channel->ring_ref, 0,
 			(unsigned long)channel->ring.sring);
+	channel->ring_ref = GRANT_INVALID_REF;
 	channel->ring.sring = NULL;
 }
 
