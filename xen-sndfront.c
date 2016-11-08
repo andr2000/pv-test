@@ -368,28 +368,26 @@ void sdrv_be_stream_free(struct sdev_pcm_stream_info *stream)
 /* CAUTION!!! Call this with the spin lock held.
  * This function will release it
  */
-int sdrv_be_stream_do_io(struct snd_pcm_substream *substream,
-	struct xdrv_info *xdrv_info,
+int sdrv_be_stream_do_io(struct xdrv_evtchnl_info *evtchnl,
 	struct xensnd_req *req, unsigned long flags)
 {
-	struct sdev_pcm_stream_info *stream = sdrv_stream_get(substream);
 	int ret;
 
-	reinit_completion(&stream->evtchnl->completion);
-	if (unlikely(stream->evtchnl->state != EVTCHNL_STATE_CONNECTED)) {
-		spin_unlock_irqrestore(&xdrv_info->io_lock, flags);
+	reinit_completion(&evtchnl->completion);
+	if (unlikely(evtchnl->state != EVTCHNL_STATE_CONNECTED)) {
+		spin_unlock_irqrestore(&evtchnl->drv_info->io_lock, flags);
 		return -EIO;
 	}
-	xdrv_evtchnl_flush(stream->evtchnl);
-	spin_unlock_irqrestore(&xdrv_info->io_lock, flags);
+	xdrv_evtchnl_flush(evtchnl);
+	spin_unlock_irqrestore(&evtchnl->drv_info->io_lock, flags);
 	ret = 0;
 	if (wait_for_completion_interruptible_timeout(
-			&stream->evtchnl->completion,
+			&evtchnl->completion,
 			msecs_to_jiffies(VSND_WAIT_BACK_MS)) <= 0)
 		ret = -ETIMEDOUT;
 	if (ret < 0)
 		return ret;
-	return sndif_to_kern_error(stream->evtchnl->resp_status);
+	return sndif_to_kern_error(evtchnl->resp_status);
 }
 
 int sdrv_be_stream_open(struct snd_pcm_substream *substream,
@@ -412,7 +410,7 @@ int sdrv_be_stream_open(struct snd_pcm_substream *substream,
 	req->u.data.op.open.pcm_rate = runtime->rate;
 	req->u.data.op.open.gref_directory_start =
 		xdrv_sh_buf_get_dir_start(&stream->sh_buf);
-	ret = sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
+	ret = sdrv_be_stream_do_io(stream->evtchnl, req, flags);
 	stream->is_open = ret < 0 ? false : true;
 	return ret;
 }
@@ -431,7 +429,7 @@ int sdrv_be_stream_close(struct snd_pcm_substream *substream,
 	spin_lock_irqsave(&xdrv_info->io_lock, flags);
 
 	req = sdrv_be_stream_prepare_req(stream, XENSND_OP_CLOSE);
-	ret = sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
+	ret = sdrv_be_stream_do_io(stream->evtchnl, req, flags);
 	stream->is_open = false;
 	return ret;
 }
@@ -683,7 +681,7 @@ int sdrv_alsa_playback_do_write(struct snd_pcm_substream *substream,
 	req = sdrv_be_stream_prepare_req(stream, XENSND_OP_WRITE);
 	req->u.data.op.write.len = len;
 	req->u.data.op.write.offset = 0;
-	return sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
+	return sdrv_be_stream_do_io(stream->evtchnl, req, flags);
 }
 
 int sdrv_alsa_playback_copy(struct snd_pcm_substream *substream, int channel,
@@ -722,7 +720,7 @@ int sdrv_alsa_capture_copy(struct snd_pcm_substream *substream, int channel,
 	req = sdrv_be_stream_prepare_req(stream, XENSND_OP_READ);
 	req->u.data.op.read.len = len;
 	req->u.data.op.read.offset = 0;
-	ret = sdrv_be_stream_do_io(substream, xdrv_info, req, flags);
+	ret = sdrv_be_stream_do_io(stream->evtchnl, req, flags);
 	if (ret < 0)
 		return ret;
 	return copy_to_user(buf, stream->sh_buf.vbuffer, len);
