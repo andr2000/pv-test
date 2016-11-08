@@ -60,7 +60,7 @@ struct xdrv_evtchnl_info {
 	enum xdrv_evtchnl_state state;
 	/* latest response status and id */
 	int resp_status;
-	uint8_t resp_id;
+	uint16_t resp_id;
 };
 
 struct xdrv_shared_buffer_info {
